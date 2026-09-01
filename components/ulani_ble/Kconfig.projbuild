@@ -22,6 +22,16 @@ config ULANI_BLE_SECURE_CONNECTIONS
         against, so it is the default here. Flip this back on if legacy also
         fails, to see which one the device complains about.
 
+config ULANI_BLE_VERBOSE_LOG
+    bool "Log every GAP event and the full NimBLE host trace"
+    default n
+    help
+        Raises the ulani_ble and NimBLE tags to DEBUG at startup, which shows
+        the security-manager exchange packet by packet. Invaluable when a
+        connection will not come up, but do not leave it on: NimBLE logs one
+        line per HCI byte, so an image transfer (835 packets of 230 bytes)
+        cannot possibly keep up with the timing the panel expects.
+
 config ULANI_BLE_CHUNK_GAP_MS
     int "Delay between image data packets (ms)"
     default 20

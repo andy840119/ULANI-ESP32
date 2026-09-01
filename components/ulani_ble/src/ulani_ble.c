@@ -509,6 +509,12 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
 
+    /*
+     * Unconditional trace: a missing event is as informative as a present one,
+     * and the cases below only cover the handful we act on.
+     */
+    ESP_LOGD(TAG, "gap event type=%d", event->type);
+
     switch (event->type) {
 
     case BLE_GAP_EVENT_DISC: {
@@ -701,6 +707,11 @@ esp_err_t ulani_ble_init(const ulani_ble_cfg_t *cfg)
         !s.op_sem || !s.dat_sem || !s.enc_sem) {
         return ESP_ERR_NO_MEM;
     }
+
+#if CONFIG_ULANI_BLE_VERBOSE_LOG
+    esp_log_level_set(TAG, ESP_LOG_DEBUG);
+    esp_log_level_set("NimBLE", ESP_LOG_DEBUG);
+#endif
 
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {

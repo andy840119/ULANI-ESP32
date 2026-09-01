@@ -35,6 +35,12 @@ CONFIG_HTTPD_MAX_URI_LEN=512
 # ENFILE. Leave headroom above whatever max_open_sockets web_server asks for.
 CONFIG_LWIP_MAX_SOCKETS=16
 
+# ---- diagnostics ----
+# Compile DEBUG statements in; the default runtime level stays INFO and
+# ulani_ble raises only the tags it needs (see CONFIG_ULANI_BLE_VERBOSE_LOG).
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+CONFIG_BT_NIMBLE_LOG_LEVEL_DEBUG=y
+
 # ---- misc ----
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 CONFIG_FREERTOS_HZ=1000
