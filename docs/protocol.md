@@ -27,7 +27,7 @@ ATT 0x05 之後才發起配對並等待加密完成，這樣不在乎加密的�
 | Frame | 意義 | 成功回覆 |
 |---|---|---|
 | `04 4e 42` | checkCustomerID，每次傳圖前必送 | `04xx` |
-| `06 00` | 讀電量，同時當 keepalive | `06xx` |
+| `06 00` | 讀電量，同時當 keepalive | `06<level>` |
 | `09 03` | 請求斷線 | `09xx` |
 | `0b 0<slot>` | 切換顯示的相框（slot 1–4） | `0b00` |
 | `0c 00` | 查詢目前相框 | `0c0<slot>` |
@@ -117,6 +117,14 @@ C 實作與照抄 JS 語意的 reference 實作，其中 `seed=0xdeadbeef` 就�
 | GATT handle | service 15–21；op 值 17 / CCCD 18；data 值 20 / CCCD 21 |
 | 加密 | **必要**。未加密時寫 CCCD 會被回 ATT 0x05（insufficient authentication） |
 | 配對 | 日曆一連上就主動送 Security Request（authreq `0x09`，bonding + SC） |
+
+### 為什麼 central 也需要 peripheral 角色
+
+`CONFIG_BT_NIMBLE_ROLE_PERIPHERAL` 必須開著。NimBLE 把**接收** notification 的
+處理放在 ATT server（`ble_att_svr_rx_notify`）裡，關掉 peripheral 角色會讓整個
+ATT server 被編譯掉，連帶失去接收 notification 的能力。症狀非常難查：封包在 ATT
+層被無聲丟棄，沒有錯誤也沒有事件，每一道 op 都只是逾時。用
+`nm build/ulani_esp32.elf | grep ble_att_svr_rx_notify` 可以確認它有被連結進去。
 
 ### 日曆必須先回復出廠預設值
 

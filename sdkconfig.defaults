@@ -12,7 +12,12 @@ CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
-CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+# Counter-intuitive but required: NimBLE dispatches *incoming* notifications
+# through the ATT server (ble_att_svr_rx_notify), so a central that turns the
+# peripheral role off silently loses the ability to receive them. The panel
+# notifies and the frames are simply discarded below the GAP layer -- no error,
+# no event, every op just times out.
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
 # 230-byte writes need ATT MTU >= 233; ask for the max we can get.
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247

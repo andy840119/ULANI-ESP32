@@ -56,6 +56,7 @@ static struct {
     uint16_t svc_start, svc_end;
     uint16_t op_val, dat_val;
     uint16_t op_cccd, dat_cccd;
+    uint8_t  op_props, dat_props;
     uint16_t mtu;
 
     SemaphoreHandle_t api_lock;
@@ -75,6 +76,8 @@ static struct {
 
     SemaphoreHandle_t enc_sem;
     volatile int      enc_status;
+
+    volatile bool op_notified; /* the op channel has produced at least one notify */
 
     SemaphoreHandle_t dat_sem;
     volatile bool     dat_armed;
@@ -329,9 +332,11 @@ static int on_disc_chr(uint16_t conn, const struct ble_gatt_error *err,
     (void)conn; (void)arg;
     if (err->status == 0 && chr) {
         if (ble_uuid_cmp(&chr->uuid.u, &UUID_OP.u) == 0) {
-            s.op_val = chr->val_handle;
+            s.op_val   = chr->val_handle;
+            s.op_props = chr->properties;
         } else if (ble_uuid_cmp(&chr->uuid.u, &UUID_DAT.u) == 0) {
-            s.dat_val = chr->val_handle;
+            s.dat_val   = chr->val_handle;
+            s.dat_props = chr->properties;
         }
         return 0;
     }
@@ -443,9 +448,36 @@ static esp_err_t ensure_encrypted(void)
     return s.enc_status == 0 ? ESP_OK : ESP_FAIL;
 }
 
-static esp_err_t write_cccd(uint16_t cccd_handle)
+/*
+ * Writing 0x0001 to a characteristic that only supports indications is legal
+ * and completely silent: the subscribe appears to work and the peer then never
+ * sends anything. noble picks the bit from the characteristic properties, so
+ * do the same rather than assuming notifications.
+ */
+static esp_err_t write_cccd(uint16_t cccd_handle, uint8_t properties,
+                            const char *what)
 {
-    uint8_t value[2] = { 0x01, 0x00 }; /* notifications */
+    uint16_t cfg;
+    if (properties & BLE_GATT_CHR_PROP_NOTIFY) {
+        cfg = 0x0001;
+    } else if (properties & BLE_GATT_CHR_PROP_INDICATE) {
+        cfg = 0x0002;
+    } else {
+        ESP_LOGE(TAG, "%s characteristic offers neither notify nor indicate "
+                      "(properties 0x%02x)", what, properties);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    ESP_LOGI(TAG, "subscribing to %s as %s (properties 0x%02x)", what,
+             cfg == 0x0001 ? "notify" : "indicate", properties);
+
+    uint8_t value[2] = { (uint8_t)(cfg & 0xff), (uint8_t)(cfg >> 8) };
+    return ulani_gatt_write(cccd_handle, value, sizeof(value), 5000);
+}
+
+static esp_err_t clear_cccd(uint16_t cccd_handle)
+{
+    uint8_t value[2] = { 0x00, 0x00 };
     return ulani_gatt_write(cccd_handle, value, sizeof(value), 5000);
 }
 
@@ -454,16 +486,20 @@ static esp_err_t write_cccd(uint16_t cccd_handle)
  * subscribe is what tells us pairing is needed. Reacting to that beats pairing
  * up front: a unit that does not care never gets bothered.
  */
-static esp_err_t subscribe(uint16_t cccd_handle, const char *what)
+static esp_err_t subscribe(uint16_t cccd_handle, uint8_t properties,
+                           const char *what)
 {
     if (cccd_handle == 0) {
         ESP_LOGE(TAG, "%s characteristic has no CCCD", what);
         return ESP_ERR_NOT_FOUND;
     }
 
-    esp_err_t err = write_cccd(cccd_handle);
+    esp_err_t err = write_cccd(cccd_handle, properties, what);
     if (err == ESP_OK) {
         return ESP_OK;
+    }
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        return err;
     }
 
 #if CONFIG_ULANI_BLE_ALLOW_PAIRING
@@ -476,7 +512,7 @@ static esp_err_t subscribe(uint16_t cccd_handle, const char *what)
             ESP_LOGE(TAG, "pairing failed: %s", esp_err_to_name(err));
             return err;
         }
-        err = write_cccd(cccd_handle);
+        err = write_cccd(cccd_handle, properties, what);
         if (err == ESP_OK) {
             return ESP_OK;
         }
@@ -486,6 +522,61 @@ static esp_err_t subscribe(uint16_t cccd_handle, const char *what)
     ESP_LOGE(TAG, "subscribe %s failed (write status=%d: %s)", what,
              s.write_status, ble_hs_err_str(s.write_status));
     return err;
+}
+
+/*
+ * A CCCD write to the op characteristic is acknowledged at the ATT layer even
+ * when the panel does not actually start notifying, and every op then sits out
+ * its ten-second timeout for nothing.
+ *
+ * The reference implementation deals with this by subscribing in a loop --
+ * subscribe, and if no data has been seen, unsubscribe and subscribe again --
+ * resolving only once a notification has genuinely arrived. It marks the op
+ * channel as needing that proof and the data channel as not (BLEComm.js
+ * _subscribeCharac, called with force=false and force=true respectively), so
+ * only the op channel is retried here.
+ *
+ * The panel announces itself on the op channel shortly after a subscription
+ * takes, which is what makes the wait below terminate.
+ */
+#define OP_SUBSCRIBE_ATTEMPTS  3
+#define OP_SUBSCRIBE_WAIT_MS 400
+
+static esp_err_t confirm_op_subscription(void)
+{
+    for (int attempt = 1; attempt <= OP_SUBSCRIBE_ATTEMPTS; attempt++) {
+        for (int i = 0; i < OP_SUBSCRIBE_WAIT_MS / 50; i++) {
+            if (s.op_notified) {
+                ESP_LOGI(TAG, "op channel live after %d subscribe attempt(s)", attempt);
+                return ESP_OK;
+            }
+            if (!ulani_ble_is_connected()) {
+                return ESP_ERR_INVALID_STATE;
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+
+        ESP_LOGW(TAG, "op channel silent, re-subscribing (attempt %d/%d)",
+                 attempt, OP_SUBSCRIBE_ATTEMPTS);
+
+        esp_err_t err = clear_cccd(s.op_cccd);
+        if (err != ESP_OK) {
+            return err;
+        }
+        err = write_cccd(s.op_cccd, s.op_props, "op");
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    /*
+     * Not fatal. Every op will time out and the UI will say so, which is more
+     * use than refusing to connect at all -- and the link is still needed to
+     * find out why the panel is quiet.
+     */
+    ESP_LOGE(TAG, "op channel never produced a notification; "
+                  "replies will time out");
+    return ESP_OK;
 }
 
 /* ------------------------------------------------------------ GAP events */
@@ -580,6 +671,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                  ble_hs_err_str(event->disconnect.reason));
         s.conn_handle = BLE_HS_CONN_HANDLE_NONE;
         s.op_val = s.dat_val = s.op_cccd = s.dat_cccd = 0;
+        s.op_props = s.dat_props = 0;
+        s.op_notified = false;
         s.abort_req = true; /* unblock a transfer that is mid-flight */
         xSemaphoreGive(s.op_sem);
         xSemaphoreGive(s.dat_sem);
@@ -627,7 +720,17 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             return 0;
         }
         uint16_t rsp = (uint16_t)((buf[0] << 8) | (copied > 1 ? buf[1] : 0));
-        ESP_LOGD(TAG, "notify handle=%u rsp=%04x", event->notify_rx.attr_handle, rsp);
+
+        /*
+         * At INFO, not DEBUG: these frames are the entire reply channel and
+         * there are only a handful per transfer, so dropping one silently is
+         * the kind of thing that should never be invisible.
+         */
+        ESP_LOGI(TAG, "notify handle=%u rsp=%04x", event->notify_rx.attr_handle, rsp);
+
+        if (event->notify_rx.attr_handle == s.op_val) {
+            s.op_notified = true;
+        }
 
         if (buf[0] == ULANI_OP_IMAGE_RESULT && s.dat_armed) {
             s.dat_rsp   = rsp;
@@ -636,6 +739,9 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         } else if (buf[0] == s.op_expect) {
             s.op_rsp = rsp;
             xSemaphoreGive(s.op_sem);
+        } else {
+            ESP_LOGW(TAG, "unmatched notify rsp=%04x (expecting op 0x%02x)",
+                     rsp, s.op_expect);
         }
         return 0;
     }
@@ -834,7 +940,8 @@ esp_err_t ulani_ble_connect(const char *addr_str, uint32_t timeout_ms)
     }
 
     ulani_set_state(ULANI_STATE_DISCOVERING);
-    s.abort_req = false;
+    s.abort_req   = false;
+    s.op_notified = false;
 
 
     /* MTU first: a 230-byte write needs at least 233. */
@@ -882,14 +989,29 @@ esp_err_t ulani_ble_connect(const char *addr_str, uint32_t timeout_ms)
         goto fail;
     }
 
-    err = subscribe(s.op_cccd, "op");
+    err = subscribe(s.op_cccd, s.op_props, "op");
     if (err != ESP_OK) {
         goto fail;
     }
-    err = subscribe(s.dat_cccd, "data");
+    err = subscribe(s.dat_cccd, s.dat_props, "data");
     if (err != ESP_OK) {
         goto fail;
     }
+
+    /*
+     * checkCustomerID is the one command the reference implementation always
+     * sends before it expects the panel to cooperate. Fire it without waiting:
+     * if the panel is silent this would only burn the ten-second op timeout,
+     * and confirm_op_subscription() below is what actually watches for a reply.
+     */
+    {
+        const uint8_t hello[] = { 0x04, 0x4e, 0x42 };
+        if (ulani_op_exec(hello, sizeof(hello), false, NULL) != ESP_OK) {
+            ESP_LOGW(TAG, "checkCustomerID write failed");
+        }
+    }
+
+    confirm_op_subscription();
 
     ESP_LOGI(TAG, "ready: op=%u data=%u mtu=%u", s.op_val, s.dat_val, s.mtu);
     ulani_set_state(ULANI_STATE_READY);

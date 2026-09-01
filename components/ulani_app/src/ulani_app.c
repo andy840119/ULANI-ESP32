@@ -125,21 +125,35 @@ static void on_ble_event(const ulani_event_t *ev, void *user)
 
 /* ----------------------------------------------------------------- worker */
 
+/*
+ * Reads battery and active slot. Neither is essential, so a failure here does
+ * not tear the connection down -- but it does get reported: silently leaving
+ * the fields blank makes a dead notify path look like an empty reading.
+ */
 static void refresh_device_info(void)
 {
-    uint16_t battery = 0;
-    if (ulani_ble_get_battery(&battery) == ESP_OK) {
+    uint16_t  battery = 0;
+    esp_err_t bat_err = ulani_ble_get_battery(&battery);
+    if (bat_err == ESP_OK) {
+        ESP_LOGI(TAG, "battery reply %04x", battery);
         status_lock();
         a.status.battery_rsp = battery;
         status_unlock();
+    } else {
+        set_error("read battery", bat_err);
     }
 
-    uint8_t slot = 0;
-    if (ulani_ble_get_active_slot(&slot) == ESP_OK) {
+    uint8_t   slot     = 0;
+    esp_err_t slot_err = ulani_ble_get_active_slot(&slot);
+    if (slot_err == ESP_OK) {
+        ESP_LOGI(TAG, "active slot %u", slot);
         status_lock();
         a.status.active_slot = slot;
         status_unlock();
+    } else {
+        set_error("read active slot", slot_err);
     }
+
     a.last_op_us = esp_timer_get_time();
 }
 
