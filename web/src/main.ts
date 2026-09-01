@@ -13,7 +13,6 @@ const STATE_LABEL: Record<Status['state'], string> = {
 
 let busy = false;
 let lastDeviceKey = '';
-let currentSlot = 0;
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
@@ -31,11 +30,13 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="meter" id="s-battery-meter" hidden>
       <div class="bar"><div class="fill" id="s-battery-fill"></div></div>
     </div>
-    <p class="error" id="s-error" hidden></p>
-    <div class="progress" id="s-progress" hidden>
-      <div class="bar"><div class="fill" id="s-fill"></div></div>
-      <span id="s-pct">0%</span>
+    <div class="row" id="s-progress-row" hidden>
+      <span>傳送進度</span><strong id="s-pct">—</strong>
     </div>
+    <div class="meter" id="s-progress" hidden>
+      <div class="bar"><div class="fill" id="s-fill"></div></div>
+    </div>
+    <p class="error" id="s-error" hidden></p>
   </section>
 
   <section class="card">
@@ -70,11 +71,15 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 
   <section class="card" id="test-card">
     <h2>2. 測試</h2>
-    <p class="hint">送一張隨機色塊測試圖，確認整條連線與傳輸都正常。一次傳輸約需 30–60 秒。</p>
-    <div class="actions">
-      <button id="btn-test">隨機更新畫面</button>
+    <p class="hint">
+      送一張隨機色塊測試圖，確認整條連線與傳輸都正常。
+      日曆一次只能更新一張，下面選的那一張會被覆蓋。傳輸約需 30–60 秒。
+    </p>
+    <h3>送測試圖到第幾張</h3>
+    <div class="slots" id="send-buttons">
+      ${[1, 2, 3, 4].map((n) => `<button data-send="${n}">${n}</button>`).join('')}
     </div>
-    <h3>切換相框</h3>
+    <h3>切換目前顯示的那一張</h3>
     <div class="slots" id="slot-buttons">
       ${[1, 2, 3, 4].map((n) => `<button data-slot="${n}">${n}</button>`).join('')}
     </div>
@@ -162,7 +167,6 @@ function renderBattery(st: Status) {
 }
 
 function renderStatus(st: Status) {
-  currentSlot = st.activeSlot;
   $('#s-state').textContent = STATE_LABEL[st.state] ?? st.state;
   $('#s-device').textContent = st.connected
     ? `${st.name || 'ULANI'} (${st.address})`
@@ -172,13 +176,19 @@ function renderStatus(st: Status) {
 
   if (!busy) showError(st.error);
 
-  const progress = $<HTMLDivElement>('#s-progress');
-  progress.hidden = !st.transfer.active;
-  if (st.transfer.active && st.transfer.total > 0) {
+  const transferring = st.transfer.active && st.transfer.total > 0;
+  $<HTMLDivElement>('#s-progress-row').hidden = !transferring;
+  $<HTMLDivElement>('#s-progress').hidden = !transferring;
+  if (transferring) {
     const pct = Math.round((st.transfer.sent / st.transfer.total) * 100);
     $<HTMLDivElement>('#s-fill').style.width = `${pct}%`;
-    $('#s-pct').textContent = `${pct}%`;
+    $('#s-pct').textContent = `第 ${st.transfer.slot} 張 · ${pct}%`;
   }
+
+  document.querySelectorAll<HTMLButtonElement>('#send-buttons button').forEach((b) => {
+    b.classList.toggle('active',
+      st.transfer.active && Number(b.dataset.send) === st.transfer.slot);
+  });
 
   document.querySelectorAll<HTMLButtonElement>('#slot-buttons button').forEach((b) => {
     b.classList.toggle('active', Number(b.dataset.slot) === st.activeSlot);
@@ -196,11 +206,13 @@ $('#btn-scan').addEventListener('click', () => guard(() => api.scan()));
 
 $('#btn-disconnect').addEventListener('click', () => guard(() => api.disconnect()));
 
-$('#btn-test').addEventListener('click', () =>
-  guard(() =>
-    api.testImage(currentSlot || 1, Math.floor(Math.random() * 0xffffff) + 1),
-  ),
-);
+// One image per transfer: the slot the user picks is the only one touched.
+$('#send-buttons').addEventListener('click', (ev) => {
+  const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>('button[data-send]');
+  if (!btn) return;
+  const slot = Number(btn.dataset.send);
+  guard(() => api.testImage(slot, Math.floor(Math.random() * 0xffffff) + 1));
+});
 
 $('#device-list').addEventListener('click', (ev) => {
   const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>('button[data-address]');
