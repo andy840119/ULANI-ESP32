@@ -94,6 +94,8 @@ static void on_ble_event(const ulani_event_t *ev, void *user)
         a.status.connected       = false;
         a.status.active_slot     = 0;
         a.status.battery_rsp     = 0;
+        a.status.battery_level   = 0;
+        a.status.battery_valid   = false;
         a.status.transfer_active = false;
         a.status.connected_name[0] = 0;
         break;
@@ -135,9 +137,13 @@ static void refresh_device_info(void)
     uint16_t  battery = 0;
     esp_err_t bat_err = ulani_ble_get_battery(&battery);
     if (bat_err == ESP_OK) {
-        ESP_LOGI(TAG, "battery reply %04x", battery);
+        /* The reply is <opcode><level>; the level is the low byte. */
+        uint8_t level = (uint8_t)(battery & 0xff);
+        ESP_LOGI(TAG, "battery reply %04x -> level %u", battery, level);
         status_lock();
-        a.status.battery_rsp = battery;
+        a.status.battery_rsp   = battery;
+        a.status.battery_level = level;
+        a.status.battery_valid = true;
         status_unlock();
     } else {
         set_error("read battery", bat_err);

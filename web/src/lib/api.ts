@@ -14,6 +14,8 @@ export interface Status {
   connected: boolean;
   activeSlot: number;
   batteryRaw: number;
+  /* Absent until a reading has been taken. See docs/protocol.md on the scale. */
+  batteryLevel?: number;
   address: string;
   name: string;
   error: string;

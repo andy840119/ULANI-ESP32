@@ -27,7 +27,10 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="row"><span>狀態</span><strong id="s-state">—</strong></div>
     <div class="row"><span>裝置</span><strong id="s-device">未連線</strong></div>
     <div class="row"><span>目前相框</span><strong id="s-slot">—</strong></div>
-    <div class="row"><span>電量回應</span><strong id="s-battery">—</strong></div>
+    <div class="row"><span>電量</span><strong id="s-battery">—</strong></div>
+    <div class="meter" id="s-battery-meter" hidden>
+      <div class="bar"><div class="fill" id="s-battery-fill"></div></div>
+    </div>
     <p class="error" id="s-error" hidden></p>
     <div class="progress" id="s-progress" hidden>
       <div class="bar"><div class="fill" id="s-fill"></div></div>
@@ -134,6 +137,30 @@ function renderDevices(devices: Status['devices'], scanning: boolean) {
     .join('');
 }
 
+/*
+ * The panel answers `06 00` with `06 <level>`. The scale is not documented
+ * anywhere and was read off a live device, so the raw reply stays on screen
+ * next to the percentage -- if the assumption is wrong it is visible at a
+ * glance rather than quietly misleading.
+ */
+function renderBattery(st: Status) {
+  const meter = $<HTMLDivElement>('#s-battery-meter');
+
+  if (st.batteryLevel === undefined) {
+    $('#s-battery').textContent = '—';
+    meter.hidden = true;
+    return;
+  }
+
+  const pct = Math.max(0, Math.min(100, st.batteryLevel));
+  const raw = `0x${st.batteryRaw.toString(16).padStart(4, '0')}`;
+  $('#s-battery').innerHTML = `${pct}% <small>${raw}</small>`;
+
+  meter.hidden = false;
+  $<HTMLDivElement>('#s-battery-fill').style.width = `${pct}%`;
+  meter.classList.toggle('low', pct <= 20);
+}
+
 function renderStatus(st: Status) {
   currentSlot = st.activeSlot;
   $('#s-state').textContent = STATE_LABEL[st.state] ?? st.state;
@@ -141,9 +168,7 @@ function renderStatus(st: Status) {
     ? `${st.name || 'ULANI'} (${st.address})`
     : '未連線';
   $('#s-slot').textContent = st.activeSlot ? String(st.activeSlot) : '—';
-  $('#s-battery').textContent = st.batteryRaw
-    ? `0x${st.batteryRaw.toString(16).padStart(4, '0')}`
-    : '—';
+  renderBattery(st);
 
   if (!busy) showError(st.error);
 

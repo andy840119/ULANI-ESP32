@@ -234,3 +234,21 @@ footer {
 .notice .src {
   font-size: 0.8rem;
 }
+
+.meter {
+  padding: 0.25rem 0 0.5rem;
+}
+
+.meter .fill {
+  background: var(--accent);
+}
+
+.meter.low .fill {
+  background: var(--danger);
+}
+
+.row small {
+  margin-left: 0.4rem;
+  font-weight: 400;
+  color: var(--muted);
+}

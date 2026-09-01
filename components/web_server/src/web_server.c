@@ -108,6 +108,9 @@ static esp_err_t get_status(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "connected", st.connected);
     cJSON_AddNumberToObject(root, "activeSlot", st.active_slot);
     cJSON_AddNumberToObject(root, "batteryRaw", st.battery_rsp);
+    if (st.battery_valid) {
+        cJSON_AddNumberToObject(root, "batteryLevel", st.battery_level);
+    }
     cJSON_AddStringToObject(root, "address", st.connected_addr);
     cJSON_AddStringToObject(root, "name", st.connected_name);
     cJSON_AddStringToObject(root, "error", st.last_error);

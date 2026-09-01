@@ -118,6 +118,13 @@ C 實作與照抄 JS 語意的 reference 實作，其中 `seed=0xdeadbeef` 就�
 | 加密 | **必要**。未加密時寫 CCCD 會被回 ATT 0x05（insufficient authentication） |
 | 配對 | 日曆一連上就主動送 Security Request（authreq `0x09`，bonding + SC） |
 
+### 電量的編碼尚未確認
+
+`06 00` 的回覆是 `06 <level>`，實測讀到 `06 05`。**level 的刻度沒有任何文件佐證**——
+它可能是 0–100 的百分比，也可能是 0–5 的格數。目前 UI 直接當百分比顯示，並且
+把原始回覆 (`0x0605`) 並排印在旁邊，這樣假設一旦錯了會立刻看得出來，而不是
+安靜地誤導人。請拿日曆自己顯示的電量比對後再回頭修正這一段。
+
 ### 為什麼 central 也需要 peripheral 角色
 
 `CONFIG_BT_NIMBLE_ROLE_PERIPHERAL` 必須開著。NimBLE 把**接收** notification 的
