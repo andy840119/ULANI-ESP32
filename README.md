@@ -4,10 +4,10 @@
 ESP32-C3：ESP32 開一個熱點，手機或電腦連進去後用網頁操作 ULANI 電子日曆，
 不需要官方 App，也不需要一台開著藍牙的 Windows。
 
-> **目前狀態：第一階段。** BLE 協定、熱點、captive portal 與「隨機更新畫面」
-> 自我測試已完成且可編譯。圖片上傳與前端 dither 尚未實作。
-> **所有 BLE 行為都還沒在真機上驗證過**，請見 [docs/protocol.md](docs/protocol.md)
-> 最後一節。
+> **目前狀態：第一階段，連線已在真機打通。**
+> 掃描、連線、配對、GATT 訂閱都已對著實機驗證（見
+> [docs/protocol.md](docs/protocol.md)）。
+> 圖片傳輸尚未成功，圖片上傳與前端 dither 也還沒實作。
 
 ## 硬體
 
@@ -37,6 +37,18 @@ idf.py -p COM<n> flash monitor
 3. 確認日曆已開機、且沒有被官方 App 或其他電腦佔用（一次只能一台）
 4. 按「搜尋日曆」→ 選擇裝置 → 連線
 5. 按「隨機更新畫面」送一張測試圖，約 30–60 秒
+
+### 日曆需要先回復出廠預設值
+
+**如果日曆曾經和官方 App 配對過，必須先在日曆上回復出廠預設值，否則連不上。**
+日曆會記住上一個配對過的裝置並拒絕新的配對，症狀是搜尋得到、一連線就失敗
+（log 會顯示日曆在收到我們的 Pairing Request 之後直接切斷連線）。
+移除手機上的 App 並不會清掉這筆記錄。
+
+> 按著【功能鍵】再戳【重置孔】一下，直到 LED 燈開始閃爍後，再放開【功能鍵】。
+> 螢幕會開始顯示回復出廠值的操作指示圖。
+
+操作步驟引自 ULANI 官方說明：<https://www.ulani.com.tw/ulani-app.html>
 
 ## 專案結構
 
@@ -75,10 +87,11 @@ docs/protocol.md    逆推出來的協定筆記，含刻意保留的怪癖
 
 ## 已知風險
 
-- **MTU**：230 bytes 的 write 需要 ATT MTU ≥ 233。Node 版靠作業系統談，
-  這裡在 `sdkconfig.defaults` 要到 247，但日曆給不給還沒實測。
-- **配對**：原專案要求先在 Windows 配對，所以韌體預設主動發起 pairing
-  （`CONFIG_ULANI_BLE_INITIATE_SECURITY`），失敗只警告不中斷。
+- **MTU**：230 bytes 的 write 需要 ATT MTU ≥ 233。實測日曆談到 **247**，
+  所以切包方式不用改。
+- **配對**：日曆拒絕在未加密的連線上讓我們訂閱 notify（回 ATT 0x05），所以韌體
+  會在被拒時才發起配對並等待加密完成。目前提供的是 LE Legacy 配對
+  （`CONFIG_ULANI_BLE_SECURE_CONNECTIONS` 預設關閉）。
 - **WiFi/BLE 共存**：C3 單天線分時，傳圖那 30–60 秒網頁會變頓，這是正常的。
   `CONFIG_ULANI_BLE_CHUNK_GAP_MS` 可以調慢傳輸來換穩定度。
 

@@ -1,14 +1,26 @@
 menu "ULANI BLE"
 
-config ULANI_BLE_INITIATE_SECURITY
-    bool "Initiate pairing after connecting"
+config ULANI_BLE_ALLOW_PAIRING
+    bool "Pair when the calendar demands an encrypted link"
     default y
     help
-        The reference Node.js implementation requires the calendar to have been
-        paired through the host OS first, which suggests the device expects an
-        encrypted link. Enable this to have the ESP32 start pairing itself right
-        after connecting. Failure is logged but not treated as fatal, so it is
-        safe to leave on while you find out what your unit actually wants.
+        The calendar rejects CCCD writes on an unencrypted link with ATT error
+        0x05 (insufficient authentication), which is why the reference Node.js
+        implementation requires an OS-level pairing first. With this enabled the
+        firmware reacts to that rejection by pairing and retrying, so a unit
+        that does not care is never bothered. Turn it off to see the raw
+        rejection instead.
+
+config ULANI_BLE_SECURE_CONNECTIONS
+    bool "Offer LE Secure Connections when pairing"
+    default n
+    help
+        The calendar asks for Secure Connections in its Security Request, but
+        answering in kind gets the link dropped without so much as a Pairing
+        Response. LE Legacy pairing is spec-legal to offer regardless of what
+        the peer advertises and is what 2019-era hardware was actually tested
+        against, so it is the default here. Flip this back on if legacy also
+        fails, to see which one the device complains about.
 
 config ULANI_BLE_CHUNK_GAP_MS
     int "Delay between image data packets (ms)"

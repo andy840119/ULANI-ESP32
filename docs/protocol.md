@@ -14,9 +14,10 @@
 
 廣播名稱以 `ULANI Calendar` 開頭，後面接裝置專屬碼（例：`ULANI CalendarC0FFEE`）。
 
-Node 版要求先在 Windows 藍牙設定完成配對，暗示裝置期待加密連線。
-韌體預設會在連線後主動發起 pairing（`CONFIG_ULANI_BLE_INITIATE_SECURITY`），
-失敗只記 log 不中斷，方便實機確認你的機器到底要不要。
+Node 版要求先在 Windows 藍牙設定完成配對，這點已由實機確認：日曆在未加密的連線上
+會拒絕 CCCD 寫入。韌體因此採取「被拒才配對」的順序——先直接嘗試訂閱，收到
+ATT 0x05 之後才發起配對並等待加密完成，這樣不在乎加密的機型就不會被打擾。
+詳見下方「實機驗證結果」。
 
 ## Opcode
 
@@ -26,7 +27,7 @@ Node 版要求先在 Windows 藍牙設定完成配對，暗示裝置期待加密
 | Frame | 意義 | 成功回覆 |
 |---|---|---|
 | `04 4e 42` | checkCustomerID，每次傳圖前必送 | `04xx` |
-| `06 00` | 讀電量，同時當 keepalive | `06xx` |
+| `06 00` | 讀電量，同時當 keepalive | `06<level>` |
 | `09 03` | 請求斷線 | `09xx` |
 | `0b 0<slot>` | 切換顯示的相框（slot 1–4） | `0b00` |
 | `0c 00` | 查詢目前相框 | `0c0<slot>` |
@@ -105,11 +106,46 @@ crc = 0x0381 → "381" → [0x38, 0x01]     ← 而不是 [0x03, 0x81]
 C 實作與照抄 JS 語意的 reference 實作，其中 `seed=0xdeadbeef` 就是專門
 用來釘住這個 case 的。
 
-## 尚未驗證的部分
+## 實機驗證結果
 
-以下都還沒碰過真機，實測後請回頭更新這份文件：
+對著一台 `ULANI CalendarD536FD`（public address）實測：
 
-- 裝置是否真的需要加密連線，以及能不能接受 Just Works 配對
-- 能不能談到 MTU ≥ 233；談不到的話 230 bytes 的切包方式要怎麼改
-- WiFi AP 開著時，共存的射頻排程會不會讓傳輸掉包
+| 項目 | 結果 |
+|---|---|
+| 廣播位址型別 | public，不會輪替 |
+| ATT MTU | **247**，230 bytes 的寫入不需分段 |
+| GATT handle | service 15–21；op 值 17 / CCCD 18；data 值 20 / CCCD 21 |
+| 加密 | **必要**。未加密時寫 CCCD 會被回 ATT 0x05（insufficient authentication） |
+| 配對 | 日曆一連上就主動送 Security Request（authreq `0x09`，bonding + SC） |
+
+### 電量的編碼尚未確認
+
+`06 00` 的回覆是 `06 <level>`，實測讀到 `06 05`。**level 的刻度沒有任何文件佐證**——
+它可能是 0–100 的百分比，也可能是 0–5 的格數。目前 UI 直接當百分比顯示，並且
+把原始回覆 (`0x0605`) 並排印在旁邊，這樣假設一旦錯了會立刻看得出來，而不是
+安靜地誤導人。請拿日曆自己顯示的電量比對後再回頭修正這一段。
+
+### 為什麼 central 也需要 peripheral 角色
+
+`CONFIG_BT_NIMBLE_ROLE_PERIPHERAL` 必須開著。NimBLE 把**接收** notification 的
+處理放在 ATT server（`ble_att_svr_rx_notify`）裡，關掉 peripheral 角色會讓整個
+ATT server 被編譯掉，連帶失去接收 notification 的能力。症狀非常難查：封包在 ATT
+層被無聲丟棄，沒有錯誤也沒有事件，每一道 op 都只是逾時。用
+`nm build/ulani_esp32.elf | grep ble_att_svr_rx_notify` 可以確認它有被連結進去。
+
+### 日曆必須先回復出廠預設值
+
+曾經和官方 App 配對過的日曆**會拒絕建立新的 bond**。症狀是掃描得到、連線也成功，
+但在收到我們的 Pairing Request 之後約 130 ms 就主動切斷連線（HCI reason 0x13,
+remote user terminated），連 Pairing Response 都不回。移除手機上的 App 沒有用，
+必須在日曆上回復出廠預設值（按著功能鍵戳重置孔，見 README）。
+
+回復出廠預設值之後，同一份韌體就能完成配對並訂閱 notify。
+
+### 還沒驗證的部分
+
+- 影像傳輸本身——目前還沒有成功送出過一張圖
 - CRC 錯位那件事，裝置端到底是怎麼解讀的
+- WiFi AP 開著時，共存的射頻排程會不會讓傳輸掉包
+- 提供 LE Secure Connections（而非目前的 legacy）是否也能配對成功。
+  切換到 legacy 和回復出廠預設值是同一輪做的，所以哪一項才是關鍵尚未釐清

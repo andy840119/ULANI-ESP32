@@ -25,6 +25,8 @@ typedef struct {
     bool          connected;
     uint8_t       active_slot;   /* 0 = unknown */
     uint16_t      battery_rsp;   /* raw op reply, 0 = unknown */
+    bool          battery_valid;
+    uint8_t       battery_level; /* low byte of the reply; see protocol.md */
     uint16_t      mtu;
 
     bool     transfer_active;
