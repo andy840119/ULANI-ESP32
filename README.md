@@ -19,16 +19,27 @@ ESP32-C3：ESP32 開一個熱點，手機或電腦連進去後用網頁操作 UL
 
 ## 編譯
 
+`idf.py` 只存在於已啟用 ESP-IDF 環境的 shell 裡。最省事的方式是用
+**開始功能表 → ESP-IDF → 「ESP-IDF 5.5 PowerShell」**。
+若想在既有的終端機裡啟用，在專案根目錄執行（注意開頭那個點）：
+
+```powershell
+. .\tools\idf-env.ps1
+```
+
 前端必須先建，因為韌體會把它內嵌進去：
 
 ```bash
 python tools/build_web.py          # npm install + build + gzip 進 components/web_server/www
 idf.py set-target esp32c3
 idf.py build
-idf.py -p COM<n> flash monitor
+idf.py -p COM<n> flash monitor     # 離開 monitor 按 Ctrl+]
 ```
 
 改前端後重跑 `tools/build_web.py` 再 `idf.py build` 即可。
+
+> `sdkconfig.defaults` 只在 `sdkconfig` 不存在時才會被讀取。改了預設值之後
+> 要刪掉 `sdkconfig` 再 build，否則新設定不會生效。
 
 ## 使用
 
