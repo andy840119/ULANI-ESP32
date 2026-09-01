@@ -259,6 +259,47 @@ esp_err_t ulani_gatt_write(uint16_t val_handle, const void *data, uint16_t len,
     return ESP_OK;
 }
 
+/*
+ * The data characteristic advertises write-without-response (0x04) and not
+ * write (0x08), so a write-with-response is rejected with ATT 0x06, "request
+ * not supported" -- on the very first packet of an image. Pick from the
+ * properties rather than assuming, the way the CCCD write does.
+ *
+ * Without a response there is no per-packet completion to wait on, so the only
+ * flow control is the controller running out of buffers; back off and retry
+ * when that happens rather than dropping a packet from the middle of an image.
+ */
+esp_err_t ulani_gatt_write_data(const void *data, uint16_t len)
+{
+    if (s.conn_handle == BLE_HS_CONN_HANDLE_NONE || s.dat_val == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s.dat_props & BLE_GATT_CHR_PROP_WRITE) {
+        return ulani_gatt_write(s.dat_val, data, len, 5000);
+    }
+    if (!(s.dat_props & BLE_GATT_CHR_PROP_WRITE_NO_RSP)) {
+        ESP_LOGE(TAG, "data characteristic is not writable (properties 0x%02x)",
+                 s.dat_props);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    for (int attempt = 0; attempt < 50; attempt++) {
+        int rc = ble_gattc_write_no_rsp_flat(s.conn_handle, s.dat_val, data, len);
+        if (rc == 0) {
+            return ESP_OK;
+        }
+        if (rc != BLE_HS_ENOMEM) {
+            ESP_LOGE(TAG, "data write rc=%d (%s)", rc, ble_hs_err_str(rc));
+            return ESP_FAIL;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10)); /* controller buffers are full */
+    }
+
+    ESP_LOGE(TAG, "data write blocked: controller buffers never drained");
+    return ESP_ERR_TIMEOUT;
+}
+
 esp_err_t ulani_op_exec(const uint8_t *frame, uint16_t len, bool wait_rsp, uint16_t *rsp)
 {
     if (len < 1) {
