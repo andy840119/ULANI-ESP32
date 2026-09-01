@@ -3,4 +3,4 @@ idf_component_register(
          "src/dns_server.c"
     INCLUDE_DIRS "include"
     REQUIRES esp_wifi
-    PRIV_REQUIRES esp_netif esp_event lwip)
+    PRIV_REQUIRES esp_netif esp_event lwip nvs_flash esp_timer)
