@@ -67,9 +67,17 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         <p class="src">操作步驟引自 ULANI 官方說明：ulani.com.tw/ulani-app.html</p>
       </details>
 
+      <div class="row" id="saved-row" hidden>
+        <span>已記住</span><strong id="saved-name">—</strong>
+      </div>
+      <p class="hint" id="saved-hint" hidden>
+        每次通電都會自動連上這台，不用再按搜尋。
+      </p>
+
       <div class="actions">
         <button id="btn-scan">搜尋日曆</button>
         <button id="btn-disconnect" class="ghost">中斷連線</button>
+        <button id="btn-forget" class="ghost" hidden>清除記住的裝置</button>
       </div>
       <ul class="devices" id="device-list"><li class="empty">尚未搜尋</li></ul>
     </section>
@@ -278,6 +286,21 @@ function renderStatus(st: Status) {
   $<HTMLElement>('#test-card').classList.toggle('disabled', !st.connected);
 
   renderDevices(st.devices, st.state === 'scanning');
+  renderSaved(st);
+}
+
+function renderSaved(st: Status) {
+  const saved = st.savedDevice;
+  $<HTMLDivElement>('#saved-row').hidden = !saved;
+  $<HTMLParagraphElement>('#saved-hint').hidden = !saved?.autoConnect;
+  $<HTMLButtonElement>('#btn-forget').hidden = !saved;
+
+  if (saved) {
+    const label = saved.name || saved.address;
+    $('#saved-name').innerHTML = saved.autoConnect
+      ? `${label} <small>${saved.address}</small>`
+      : `${label} <small>${saved.address} · 自動連線已停用</small>`;
+  }
 }
 
 /* --------------------------------------------------------------- events */
@@ -286,6 +309,8 @@ function renderStatus(st: Status) {
 $('#btn-scan').addEventListener('click', () => guard(() => api.scan()));
 
 $('#btn-disconnect').addEventListener('click', () => guard(() => api.disconnect()));
+
+$('#btn-forget').addEventListener('click', () => guard(() => api.forgetDevice()));
 
 // One image per transfer: the slot the user picks is the only one touched.
 $('#send-buttons').addEventListener('click', (ev) => {

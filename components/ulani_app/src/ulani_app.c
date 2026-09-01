@@ -8,10 +8,23 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "nvs.h"
 
 #include "ulani_app.h"
 
 static const char *TAG = "ulani_app";
+
+#define NVS_NAMESPACE "ulani_dev"
+#define NVS_KEY_ADDR  "addr"
+#define NVS_KEY_NAME  "name"
+#define NVS_KEY_TYPE  "type"
+
+/*
+ * How long to wait before trying the remembered device again. Long enough that
+ * a calendar which is switched off does not keep the worker busy, short enough
+ * that switching it on is noticed without touching the UI.
+ */
+#define AUTO_CONNECT_RETRY_US (30 * 1000 * 1000)
 
 typedef enum {
     CMD_SCAN,
@@ -20,6 +33,7 @@ typedef enum {
     CMD_SET_SLOT,
     CMD_REFRESH,
     CMD_TEST_IMAGE,
+    CMD_FORGET_DEVICE,
 } cmd_id_t;
 
 typedef struct {
@@ -39,6 +53,10 @@ static struct {
     size_t         device_n;
 
     int64_t last_op_us; /* for the idle timeout the device enforces */
+
+    ulani_device_t saved;        /* remembered device, addr empty if none */
+    bool           auto_connect; /* armed: keep trying to reach `saved` */
+    int64_t        next_auto_us;
 } a;
 
 static void status_lock(void)   { xSemaphoreTake(a.lock, portMAX_DELAY); }
@@ -57,6 +75,67 @@ static void clear_error(void)
 {
     status_lock();
     a.status.last_error[0] = 0;
+    status_unlock();
+}
+
+/* --------------------------------------------------------- saved device */
+
+static void saved_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+
+    size_t n = sizeof(a.saved.addr);
+    if (nvs_get_str(h, NVS_KEY_ADDR, a.saved.addr, &n) == ESP_OK) {
+        n = sizeof(a.saved.name);
+        if (nvs_get_str(h, NVS_KEY_NAME, a.saved.name, &n) != ESP_OK) {
+            a.saved.name[0] = 0;
+        }
+        uint8_t type = 0;
+        if (nvs_get_u8(h, NVS_KEY_TYPE, &type) == ESP_OK) {
+            a.saved.addr_type = type;
+        }
+        ESP_LOGI(TAG, "remembered device %s (%s)", a.saved.addr, a.saved.name);
+    }
+    nvs_close(h);
+}
+
+static void saved_store(const ulani_device_t *dev)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    nvs_set_str(h, NVS_KEY_ADDR, dev->addr);
+    nvs_set_str(h, NVS_KEY_NAME, dev->name);
+    nvs_set_u8(h, NVS_KEY_TYPE, dev->addr_type);
+    nvs_commit(h);
+    nvs_close(h);
+    ESP_LOGI(TAG, "remembering %s (%s)", dev->addr, dev->name);
+}
+
+static void saved_erase(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, NVS_KEY_ADDR);
+        nvs_erase_key(h, NVS_KEY_NAME);
+        nvs_erase_key(h, NVS_KEY_TYPE);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    memset(&a.saved, 0, sizeof(a.saved));
+    ESP_LOGI(TAG, "forgot the remembered device");
+}
+
+static void publish_saved(void)
+{
+    status_lock();
+    strlcpy(a.status.saved_addr, a.saved.addr, sizeof(a.status.saved_addr));
+    strlcpy(a.status.saved_name, a.saved.name, sizeof(a.status.saved_name));
+    a.status.auto_connect = a.auto_connect;
     status_unlock();
 }
 
@@ -189,11 +268,43 @@ static void handle_cmd(const cmd_t *cmd)
             set_error("connect", err);
             break;
         }
+
+        /*
+         * Only remember a device we have actually reached, and arm the
+         * reconnect at the same time: a link that drops later should come back
+         * without the user going through the UI again.
+         */
+        {
+            ulani_device_t dev = { 0 };
+            strlcpy(dev.addr, cmd->addr, sizeof(dev.addr));
+            for (size_t i = 0; i < a.device_n; i++) {
+                if (strcmp(a.devices[i].addr, cmd->addr) == 0) {
+                    dev = a.devices[i];
+                    break;
+                }
+            }
+            a.saved        = dev;
+            a.auto_connect = true;
+            saved_store(&dev);
+            publish_saved();
+        }
+
         /* The JS asks for these right after ulaniready; keep the same order. */
         refresh_device_info();
         break;
 
     case CMD_DISCONNECT:
+        /* Deliberate: stop reconnecting until the user asks for it again. */
+        a.auto_connect = false;
+        publish_saved();
+        ulani_ble_abort_transfer();
+        ulani_ble_disconnect();
+        break;
+
+    case CMD_FORGET_DEVICE:
+        a.auto_connect = false;
+        saved_erase();
+        publish_saved();
         ulani_ble_abort_transfer();
         ulani_ble_disconnect();
         break;
@@ -233,6 +344,38 @@ static void handle_cmd(const cmd_t *cmd)
     }
 }
 
+/*
+ * Reaches for the remembered device while the radio is otherwise idle. The
+ * connect call blocks for up to fifteen seconds when the calendar is not
+ * around, so back off well past the ten-second idle tick rather than tying the
+ * worker up and making the UI feel unresponsive.
+ */
+static void try_auto_connect(void)
+{
+    if (!a.auto_connect || a.saved.addr[0] == 0) {
+        return;
+    }
+    if (ulani_ble_state() != ULANI_STATE_IDLE) {
+        return; /* still scanning, connecting, or the host is not up yet */
+    }
+    if (esp_timer_get_time() < a.next_auto_us) {
+        return;
+    }
+    a.next_auto_us = esp_timer_get_time() + AUTO_CONNECT_RETRY_US;
+
+    ESP_LOGI(TAG, "reconnecting to %s", a.saved.addr);
+    status_lock();
+    strlcpy(a.status.connected_addr, a.saved.addr, sizeof(a.status.connected_addr));
+    status_unlock();
+
+    esp_err_t err = ulani_ble_connect(a.saved.addr, 15000);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "reconnect failed: %s (retrying)", esp_err_to_name(err));
+        return;
+    }
+    refresh_device_info();
+}
+
 static void worker_task(void *param)
 {
     (void)param;
@@ -244,13 +387,21 @@ static void worker_task(void *param)
             continue;
         }
 
-        /* Idle tick: keep the link alive the way binaryAck() does. */
         if (!ulani_ble_is_connected()) {
+            try_auto_connect();
             continue;
         }
+
+        /* Idle tick: keep the link alive the way binaryAck() does. */
         int64_t idle_us = esp_timer_get_time() - a.last_op_us;
         if (idle_us > (int64_t)ULANI_IDLE_TIMEOUT_MS * 1000) {
             ESP_LOGI(TAG, "idle for %lld s, releasing the device", idle_us / 1000000);
+            /*
+             * Letting go on purpose so the official app can have a turn. Do not
+             * immediately grab it back -- that would make the release useless.
+             */
+            a.auto_connect = false;
+            publish_saved();
             ulani_ble_ask_disconnect();
             ulani_ble_disconnect();
         } else {
@@ -272,10 +423,23 @@ esp_err_t ulani_app_start(void)
     }
     a.last_op_us = esp_timer_get_time();
 
+    saved_load();
+    a.auto_connect = (a.saved.addr[0] != 0);
+    publish_saved();
+
     ulani_ble_cfg_t cfg = { .event_cb = on_ble_event, .event_user = NULL };
     esp_err_t err = ulani_ble_init(&cfg);
     if (err != ESP_OK) {
         return err;
+    }
+
+    /*
+     * After init, not before: ulani_ble_init() clears its own state, which
+     * would take the seeded entry with it. This is what lets the reconnect use
+     * the right address type without scanning first.
+     */
+    if (a.auto_connect) {
+        ulani_ble_seed_device(&a.saved);
     }
 
     if (xTaskCreate(worker_task, "ulani_app", 5120, NULL, 5, NULL) != pdPASS) {
@@ -336,6 +500,12 @@ esp_err_t ulani_app_cmd_set_slot(uint8_t slot)
 esp_err_t ulani_app_cmd_refresh(void)
 {
     cmd_t cmd = { .id = CMD_REFRESH };
+    return post(&cmd);
+}
+
+esp_err_t ulani_app_cmd_forget_device(void)
+{
+    cmd_t cmd = { .id = CMD_FORGET_DEVICE };
     return post(&cmd);
 }
 
