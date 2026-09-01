@@ -178,15 +178,7 @@ button:disabled {
   color: #fff;
 }
 
-.progress {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-top: 0.75rem;
-}
-
 .bar {
-  flex: 1;
   height: 8px;
   border-radius: 4px;
   background: var(--line);

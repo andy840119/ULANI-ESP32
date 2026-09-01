@@ -71,6 +71,19 @@ Node 版把數字字串切成 460 字元一段，所以每次 BLE write 是 **23
 
 每包之間 sleep 20 ms。230 bytes 的 write 需要 ATT MTU ≥ 233。
 
+**data channel 只接受 write without response。** 實測 properties 是 `0x16`
+（READ | WRITE_NO_RSP | NOTIFY），沒有 `0x08`（WRITE），所以用有回應的寫入會在
+**第一個封包**就被回 ATT `0x06`（Request Not Supported），接著日曆送 `0201` 宣告
+傳輸失敗。op channel 的 properties 是 `0x1a`（含 `0x08`），用的是有回應的寫入——
+兩個 channel 不一樣，必須各自依 properties 決定。
+
+因為沒有回應也就沒有流量控制，唯一的背壓來自控制器緩衝耗盡
+（`BLE_HS_ENOMEM`），此時要退避重試，不能把封包丟掉。
+
+**傳輸期間仍要送 keepalive。** 一張圖要 20–30 秒，遠超過日曆容忍的 10 秒靜默。
+Node 版的 `setInterval` 與傳輸並行，韌體這邊是單一 task，所以在送包迴圈裡每 8 秒
+插入一次 `06 00`。
+
 ### 傳圖流程
 
 1. 對整包 192000 bytes 算 CRC-16/XMODEM（poly `0x1021`, init `0x0000`）
@@ -144,7 +157,6 @@ remote user terminated），連 Pairing Response 都不回。移除手機上的 
 
 ### 還沒驗證的部分
 
-- 影像傳輸本身——目前還沒有成功送出過一張圖
 - CRC 錯位那件事，裝置端到底是怎麼解讀的
 - WiFi AP 開著時，共存的射頻排程會不會讓傳輸掉包
 - 提供 LE Secure Connections（而非目前的 legacy）是否也能配對成功。
