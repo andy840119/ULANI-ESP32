@@ -49,6 +49,9 @@ void app_main(void)
     ESP_ERROR_CHECK(net_provision_start_ap(&ap));
     ESP_ERROR_CHECK(net_dns_hijack_start());
 
+    /* Joins the user's own network if one has been saved. The AP stays up. */
+    ESP_ERROR_CHECK(net_sta_start());
+
     ESP_ERROR_CHECK(ulani_app_start());
     ESP_ERROR_CHECK(web_server_start());
 

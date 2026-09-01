@@ -10,6 +10,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 
+#include "net_provision.h"
 #include "ulani_app.h"
 #include "web_server.h"
 
@@ -232,6 +233,79 @@ static esp_err_t post_test(httpd_req_t *req)
                          : send_err(req, "503 Service Unavailable", "busy");
 }
 
+/* -------------------------------------------------------------------- wifi */
+
+static esp_err_t get_wifi(httpd_req_t *req)
+{
+    net_sta_status_t sta;
+    net_sta_get_status(&sta);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "state", net_sta_state_str(sta.state));
+    cJSON_AddStringToObject(root, "ssid", sta.ssid);
+    cJSON_AddStringToObject(root, "ip", sta.ip);
+    cJSON_AddNumberToObject(root, "rssi", sta.rssi);
+    cJSON_AddNumberToObject(root, "lastReason", sta.last_reason);
+    cJSON_AddBoolToObject(root, "scanning", net_wifi_scan_busy());
+
+    net_scan_result_t found[NET_SCAN_MAX];
+    size_t n = net_wifi_scan_results(found, NET_SCAN_MAX);
+
+    cJSON *arr = cJSON_AddArrayToObject(root, "networks");
+    for (size_t i = 0; i < n; i++) {
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "ssid", found[i].ssid);
+        cJSON_AddNumberToObject(e, "rssi", found[i].rssi);
+        cJSON_AddNumberToObject(e, "channel", found[i].channel);
+        cJSON_AddBoolToObject(e, "open", found[i].open);
+        cJSON_AddItemToArray(arr, e);
+    }
+
+    return send_json(req, root);
+}
+
+static esp_err_t post_wifi_scan(httpd_req_t *req)
+{
+    esp_err_t err = net_wifi_scan_start();
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_err(req, "409 Conflict", "a scan is already running");
+    }
+    return err == ESP_OK ? send_ok(req)
+                         : send_err(req, "500 Internal Server Error", "scan failed");
+}
+
+static esp_err_t post_wifi_connect(httpd_req_t *req)
+{
+    cJSON *body = read_json_body(req);
+    if (!body) {
+        return send_err(req, "400 Bad Request", "invalid json");
+    }
+
+    cJSON *ssid = cJSON_GetObjectItem(body, "ssid");
+    cJSON *pass = cJSON_GetObjectItem(body, "password");
+    if (!cJSON_IsString(ssid) || ssid->valuestring[0] == 0) {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "ssid required");
+    }
+
+    esp_err_t err = net_sta_connect(ssid->valuestring,
+                                    cJSON_IsString(pass) ? pass->valuestring : "");
+    cJSON_Delete(body);
+
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_err(req, "400 Bad Request", "ssid or password too long");
+    }
+    return err == ESP_OK ? send_ok(req)
+                         : send_err(req, "500 Internal Server Error", "could not join");
+}
+
+static esp_err_t post_wifi_forget(httpd_req_t *req)
+{
+    return net_sta_forget() == ESP_OK
+               ? send_ok(req)
+               : send_err(req, "500 Internal Server Error", "could not erase");
+}
+
 /* ---------------------------------------------------------- static files */
 
 static esp_err_t get_index(httpd_req_t *req)
@@ -267,7 +341,7 @@ static esp_err_t redirect_to_root(httpd_req_t *req, httpd_err_code_t err)
 esp_err_t web_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 20;
     cfg.lru_purge_enable = true;
     cfg.stack_size       = 6144;
     /*
@@ -296,6 +370,10 @@ esp_err_t web_server_start(void)
         { .uri = "/api/refresh",       .method = HTTP_POST, .handler = post_refresh },
         { .uri = "/api/slot",          .method = HTTP_POST, .handler = post_slot },
         { .uri = "/api/test-image",    .method = HTTP_POST, .handler = post_test },
+        { .uri = "/api/wifi",          .method = HTTP_GET,  .handler = get_wifi },
+        { .uri = "/api/wifi/scan",     .method = HTTP_POST, .handler = post_wifi_scan },
+        { .uri = "/api/wifi/connect",  .method = HTTP_POST, .handler = post_wifi_connect },
+        { .uri = "/api/wifi/forget",   .method = HTTP_POST, .handler = post_wifi_forget },
     };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         httpd_register_uri_handler(s_server, &routes[i]);

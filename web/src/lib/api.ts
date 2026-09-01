@@ -31,6 +31,25 @@ export interface Device {
   rssi: number;
 }
 
+export type WifiState = 'disabled' | 'connecting' | 'connected' | 'failed';
+
+export interface WifiNetwork {
+  ssid: string;
+  rssi: number;
+  channel: number;
+  open: boolean;
+}
+
+export interface WifiStatus {
+  state: WifiState;
+  ssid: string;
+  ip: string;
+  rssi: number;
+  lastReason: number;
+  scanning: boolean;
+  networks: WifiNetwork[];
+}
+
 class ApiError extends Error {}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -61,4 +80,10 @@ export const api = {
   setSlot: (slot: number) => post('/api/slot', { slot }),
   testImage: (slot: number, seed?: number) =>
     post('/api/test-image', { slot, seed: seed ?? 0 }),
+
+  wifi: () => request<WifiStatus>('/api/wifi'),
+  wifiScan: () => post('/api/wifi/scan'),
+  wifiConnect: (ssid: string, password: string) =>
+    post('/api/wifi/connect', { ssid, password }),
+  wifiForget: () => post('/api/wifi/forget'),
 };
