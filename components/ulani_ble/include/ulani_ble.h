@@ -92,6 +92,13 @@ bool          ulani_ble_is_connected(void);
 esp_err_t ulani_ble_scan_start(uint32_t duration_ms);
 esp_err_t ulani_ble_scan_stop(void);
 
+/*
+ * Adds a device to the table the connect path consults for address types, so a
+ * known device can be reached without scanning for it first. Connecting to an
+ * address that was never seen falls back to assuming a public address.
+ */
+esp_err_t ulani_ble_seed_device(const ulani_device_t *dev);
+
 /* addr is "aa:bb:cc:dd:ee:ff". Blocks until the GATT handles are resolved. */
 esp_err_t ulani_ble_connect(const char *addr, uint32_t timeout_ms);
 esp_err_t ulani_ble_disconnect(void);

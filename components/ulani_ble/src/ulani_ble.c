@@ -894,6 +894,14 @@ esp_err_t ulani_ble_init(const ulani_ble_cfg_t *cfg)
     return ESP_OK;
 }
 
+esp_err_t ulani_ble_seed_device(const ulani_device_t *dev)
+{
+    if (!dev || dev->addr[0] == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return seen_add(dev) ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
 esp_err_t ulani_ble_scan_start(uint32_t duration_ms)
 {
     if (!s.host_synced || s.conn_handle != BLE_HS_CONN_HANDLE_NONE) {

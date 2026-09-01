@@ -41,6 +41,11 @@ typedef struct {
     char last_error[64];
     char connected_addr[18];
     char connected_name[32];
+
+    /* The device the board reconnects to on its own. Empty if none. */
+    char saved_addr[18];
+    char saved_name[32];
+    bool auto_connect;
 } ulani_app_status_t;
 
 esp_err_t ulani_app_start(void);
@@ -54,6 +59,9 @@ esp_err_t ulani_app_cmd_connect(const char *addr);
 esp_err_t ulani_app_cmd_disconnect(void);
 esp_err_t ulani_app_cmd_set_slot(uint8_t slot);
 esp_err_t ulani_app_cmd_refresh(void);   /* battery + active slot */
+
+/* Forgets the remembered device and stops reconnecting to it. */
+esp_err_t ulani_app_cmd_forget_device(void);
 
 /*
  * Phase 1 self-test: generates a 192000-byte pattern on the fly from seed and

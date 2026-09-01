@@ -116,6 +116,13 @@ static esp_err_t get_status(httpd_req_t *req)
     cJSON_AddStringToObject(root, "name", st.connected_name);
     cJSON_AddStringToObject(root, "error", st.last_error);
 
+    if (st.saved_addr[0]) {
+        cJSON *saved = cJSON_AddObjectToObject(root, "savedDevice");
+        cJSON_AddStringToObject(saved, "address", st.saved_addr);
+        cJSON_AddStringToObject(saved, "name", st.saved_name);
+        cJSON_AddBoolToObject(saved, "autoConnect", st.auto_connect);
+    }
+
     cJSON *xfer = cJSON_AddObjectToObject(root, "transfer");
     cJSON_AddBoolToObject(xfer, "active", st.transfer_active);
     cJSON_AddNumberToObject(xfer, "slot", st.transfer_slot);
@@ -181,6 +188,13 @@ static esp_err_t post_connect(httpd_req_t *req)
 static esp_err_t post_disconnect(httpd_req_t *req)
 {
     return ulani_app_cmd_disconnect() == ESP_OK
+               ? send_ok(req)
+               : send_err(req, "503 Service Unavailable", "busy");
+}
+
+static esp_err_t post_forget_device(httpd_req_t *req)
+{
+    return ulani_app_cmd_forget_device() == ESP_OK
                ? send_ok(req)
                : send_err(req, "503 Service Unavailable", "busy");
 }
@@ -368,6 +382,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/connect",       .method = HTTP_POST, .handler = post_connect },
         { .uri = "/api/disconnect",    .method = HTTP_POST, .handler = post_disconnect },
         { .uri = "/api/refresh",       .method = HTTP_POST, .handler = post_refresh },
+        { .uri = "/api/forget-device", .method = HTTP_POST, .handler = post_forget_device },
         { .uri = "/api/slot",          .method = HTTP_POST, .handler = post_slot },
         { .uri = "/api/test-image",    .method = HTTP_POST, .handler = post_test },
         { .uri = "/api/wifi",          .method = HTTP_GET,  .handler = get_wifi },

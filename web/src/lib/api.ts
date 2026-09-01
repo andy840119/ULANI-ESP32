@@ -23,6 +23,8 @@ export interface Status {
   lastTransfer?: { ok: boolean; rsp: number };
   /* Scan results ride along with the status so the UI needs only one poll. */
   devices: Device[];
+  /* The device reconnected to on power-up. Absent if none is remembered. */
+  savedDevice?: { address: string; name: string; autoConnect: boolean };
 }
 
 export interface Device {
@@ -76,6 +78,7 @@ export const api = {
   scan: (durationMs = 8000) => post('/api/scan', { durationMs }),
   connect: (address: string) => post('/api/connect', { address }),
   disconnect: () => post('/api/disconnect'),
+  forgetDevice: () => post('/api/forget-device'),
   refresh: () => post('/api/refresh'),
   setSlot: (slot: number) => post('/api/slot', { slot }),
   testImage: (slot: number, seed?: number) =>
