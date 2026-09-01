@@ -1,0 +1,15 @@
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+
+# web build output + the copy embedded into the firmware
+web/node_modules/
+web/dist/
+components/web_server/www/*.gz
+
+.vscode/
+
+# host-side protocol verification output
+verify.exe

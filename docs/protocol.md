@@ -1,0 +1,115 @@
+# ULANI BLE 協定筆記
+
+全部內容是從 [Grassboy/ULANI.node.js](https://github.com/Grassboy/ULANI.node.js)
+的 `src/BLEComm.js` 與 `src/dither.js` 逆推而來，沒有官方文件。
+遇到原始碼的怪異行為時，這份移植選擇**照抄而非修正**——理由見下方「已知怪癖」。
+
+## GATT
+
+| 項目 | UUID | 用途 |
+|---|---|---|
+| Service | `1234a200-7cbc-11e9-8f9e-2a86e4085a59` | |
+| Char 201 | `1234a201-…` | op channel，write-with-response + notify |
+| Char 202 | `1234a202-…` | data channel，write-with-response + notify |
+
+廣播名稱以 `ULANI Calendar` 開頭，後面接裝置專屬碼（例：`ULANI CalendarC0FFEE`）。
+
+Node 版要求先在 Windows 藍牙設定完成配對，暗示裝置期待加密連線。
+韌體預設會在連線後主動發起 pairing（`CONFIG_ULANI_BLE_INITIATE_SECURITY`），
+失敗只記 log 不中斷，方便實機確認你的機器到底要不要。
+
+## Opcode
+
+寫入 op channel，裝置以 notify 回覆，回覆的第一個 byte 會重複同一個 opcode。
+下表的「回覆」是前兩個 byte。
+
+| Frame | 意義 | 成功回覆 |
+|---|---|---|
+| `04 4e 42` | checkCustomerID，每次傳圖前必送 | `04xx` |
+| `06 00` | 讀電量，同時當 keepalive | `06xx` |
+| `09 03` | 請求斷線 | `09xx` |
+| `0b 0<slot>` | 切換顯示的相框（slot 1–4） | `0b00` |
+| `0c 00` | 查詢目前相框 | `0c0<slot>` |
+| `01 …` | 開始傳圖，見下 | `0100` = 接受 |
+
+Node 版對 op 回覆設 10 秒 timeout。超時的話它 resolve 成 `<op>9999` 繼續跑，
+韌體則回傳 `ESP_ERR_TIMEOUT` 讓上層決定。
+
+### 時序
+
+- 每 10 秒送一次 `06 00` 當 ack，否則連線會被裝置切掉。
+- 超過 5 分鐘沒有任何實質操作，Node 版主動送 `09 03` 放掉裝置。
+- 一台主機同時只能控制一台 ULANI；官方 App 若連著，ESP32 會連不上。
+
+## 影像格式
+
+面板固定 800×480。dither 成 7 色，palette 順序（取自 `dither.js`）：
+
+| index | RGB | |
+|---|---|---|
+| 0 | `0,0,0` | 黑 |
+| 1 | `209,208,202` | 白 |
+| 2 | `69,121,81` | 綠 |
+| 3 | `82,91,151` | 藍 |
+| 4 | `175,76,74` | 紅 |
+| 5 | `207,194,88` | 黃 |
+| 6 | `192,99,30` | 橘 |
+
+每個 pixel 一個 palette index，以 row-major 順序排成一長串數字字元，
+再兩兩一組 hex-decode，**等於一個 byte 裝兩個 pixel，先高 nibble**。
+
+```
+384000 pixels → 384000 nibbles → 192000 bytes
+```
+
+Node 版把數字字串切成 460 字元一段，所以每次 BLE write 是 **230 bytes**：
+
+```
+192000 = 834 × 230 + 180      → 835 個封包，最後一包 180 bytes
+```
+
+每包之間 sleep 20 ms。230 bytes 的 write 需要 ATT MTU ≥ 233。
+
+### 傳圖流程
+
+1. 對整包 192000 bytes 算 CRC-16/XMODEM（poly `0x1021`, init `0x0000`）
+2. 送 `04 4e 42`
+3. 組 header 字串並送出：
+
+   ```
+   "010002ee000" + slot + "02" + <ms timestamp 的低 8 位 hex> + <crc hex>
+   ```
+
+4. 收到 `0100` 才開始，否則中止
+5. 依序寫 835 個封包到 data channel
+6. data channel 會 notify 一個 `02xx` frame：`0200` = 成功
+
+傳輸中途若提早收到 `02xx`，代表裝置放棄了，要停止送資料。
+
+## 已知怪癖（刻意保留）
+
+**CRC 沒有補零。** `dither.js` 用 `crc.toString(16)` 產生 header 裡的 CRC，
+沒有 `padStart(4, '0')`。當 CRC 小於 `0x1000` 時字串只有 3 碼，
+接著 `hexToUint8Array` 用 `substr(i, 2)` 兩兩取字元，最後落單的那個字元
+會被 `parseInt` 當成**完整一個 byte**：
+
+```
+crc = 0x0381 → "381" → [0x38, 0x01]     ← 而不是 [0x03, 0x81]
+```
+
+也就是說大約 1/16 的圖片，header 裡的 CRC 是錯位的——但既然 Node 版實測可以
+換圖成功，代表裝置要嘛不驗 CRC，要嘛用同樣的錯位方式解讀。在有實機確認之前，
+`ulani_hex_to_bytes()` 與 `ulani_build_send_header()` 完整複製這個行為。
+
+`tools/verify_payload.js` 與 `tools/verify_payload.c` 會在數個 seed 上比對
+C 實作與照抄 JS 語意的 reference 實作，其中 `seed=0xdeadbeef` 就是專門
+用來釘住這個 case 的。
+
+## 尚未驗證的部分
+
+以下都還沒碰過真機，實測後請回頭更新這份文件：
+
+- 裝置是否真的需要加密連線，以及能不能接受 Just Works 配對
+- 能不能談到 MTU ≥ 233；談不到的話 230 bytes 的切包方式要怎麼改
+- WiFi AP 開著時，共存的射頻排程會不會讓傳輸掉包
+- CRC 錯位那件事，裝置端到底是怎麼解讀的

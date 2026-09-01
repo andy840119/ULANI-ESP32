@@ -1,0 +1,22 @@
+menu "ULANI BLE"
+
+config ULANI_BLE_INITIATE_SECURITY
+    bool "Initiate pairing after connecting"
+    default y
+    help
+        The reference Node.js implementation requires the calendar to have been
+        paired through the host OS first, which suggests the device expects an
+        encrypted link. Enable this to have the ESP32 start pairing itself right
+        after connecting. Failure is logged but not treated as fatal, so it is
+        safe to leave on while you find out what your unit actually wants.
+
+config ULANI_BLE_CHUNK_GAP_MS
+    int "Delay between image data packets (ms)"
+    default 20
+    range 0 200
+    help
+        The reference implementation waits 20 ms between the 230-byte writes
+        that make up an image. Raising this makes a transfer slower but can help
+        if the panel drops packets while WiFi is busy.
+
+endmenu
