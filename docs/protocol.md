@@ -14,9 +14,10 @@
 
 廣播名稱以 `ULANI Calendar` 開頭，後面接裝置專屬碼（例：`ULANI CalendarC0FFEE`）。
 
-Node 版要求先在 Windows 藍牙設定完成配對，暗示裝置期待加密連線。
-韌體預設會在連線後主動發起 pairing（`CONFIG_ULANI_BLE_INITIATE_SECURITY`），
-失敗只記 log 不中斷，方便實機確認你的機器到底要不要。
+Node 版要求先在 Windows 藍牙設定完成配對，這點已由實機確認：日曆在未加密的連線上
+會拒絕 CCCD 寫入。韌體因此採取「被拒才配對」的順序——先直接嘗試訂閱，收到
+ATT 0x05 之後才發起配對並等待加密完成，這樣不在乎加密的機型就不會被打擾。
+詳見下方「實機驗證結果」。
 
 ## Opcode
 
@@ -105,11 +106,31 @@ crc = 0x0381 → "381" → [0x38, 0x01]     ← 而不是 [0x03, 0x81]
 C 實作與照抄 JS 語意的 reference 實作，其中 `seed=0xdeadbeef` 就是專門
 用來釘住這個 case 的。
 
-## 尚未驗證的部分
+## 實機驗證結果
 
-以下都還沒碰過真機，實測後請回頭更新這份文件：
+對著一台 `ULANI CalendarD536FD`（public address）實測：
 
-- 裝置是否真的需要加密連線，以及能不能接受 Just Works 配對
-- 能不能談到 MTU ≥ 233；談不到的話 230 bytes 的切包方式要怎麼改
-- WiFi AP 開著時，共存的射頻排程會不會讓傳輸掉包
+| 項目 | 結果 |
+|---|---|
+| 廣播位址型別 | public，不會輪替 |
+| ATT MTU | **247**，230 bytes 的寫入不需分段 |
+| GATT handle | service 15–21；op 值 17 / CCCD 18；data 值 20 / CCCD 21 |
+| 加密 | **必要**。未加密時寫 CCCD 會被回 ATT 0x05（insufficient authentication） |
+| 配對 | 日曆一連上就主動送 Security Request（authreq `0x09`，bonding + SC） |
+
+### 日曆必須先回復出廠預設值
+
+曾經和官方 App 配對過的日曆**會拒絕建立新的 bond**。症狀是掃描得到、連線也成功，
+但在收到我們的 Pairing Request 之後約 130 ms 就主動切斷連線（HCI reason 0x13,
+remote user terminated），連 Pairing Response 都不回。移除手機上的 App 沒有用，
+必須在日曆上回復出廠預設值（按著功能鍵戳重置孔，見 README）。
+
+回復出廠預設值之後，同一份韌體就能完成配對並訂閱 notify。
+
+### 還沒驗證的部分
+
+- 影像傳輸本身——目前還沒有成功送出過一張圖
 - CRC 錯位那件事，裝置端到底是怎麼解讀的
+- WiFi AP 開著時，共存的射頻排程會不會讓傳輸掉包
+- 提供 LE Secure Connections（而非目前的 legacy）是否也能配對成功。
+  切換到 legacy 和回復出廠預設值是同一輪做的，所以哪一項才是關鍵尚未釐清

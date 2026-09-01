@@ -81,6 +81,21 @@ static esp_err_t send_gz(httpd_req_t *req, const char *type,
     return httpd_resp_send(req, (const char *)start, end - start);
 }
 
+static void add_device_array(cJSON *root, const char *key)
+{
+    ulani_device_t devs[ULANI_APP_MAX_DEVICES];
+    size_t n = ulani_app_get_devices(devs, ULANI_APP_MAX_DEVICES);
+
+    cJSON *arr = cJSON_AddArrayToObject(root, key);
+    for (size_t i = 0; i < n; i++) {
+        cJSON *d = cJSON_CreateObject();
+        cJSON_AddStringToObject(d, "name", devs[i].name);
+        cJSON_AddStringToObject(d, "address", devs[i].addr);
+        cJSON_AddNumberToObject(d, "rssi", devs[i].rssi);
+        cJSON_AddItemToArray(arr, d);
+    }
+}
+
 /* ------------------------------------------------------------- endpoints */
 
 static esp_err_t get_status(httpd_req_t *req)
@@ -109,23 +124,20 @@ static esp_err_t get_status(httpd_req_t *req)
         cJSON_AddNumberToObject(last, "rsp", st.last_transfer_rsp);
     }
 
+    /*
+     * The scan results ride along here so the UI can drive everything from a
+     * single poll. Two polling loops on a phone exhausted the socket pool and
+     * made accept() fail, which looked exactly like "cannot connect".
+     */
+    add_device_array(root, "devices");
+
     return send_json(req, root);
 }
 
 static esp_err_t get_devices(httpd_req_t *req)
 {
-    ulani_device_t devs[ULANI_APP_MAX_DEVICES];
-    size_t n = ulani_app_get_devices(devs, ULANI_APP_MAX_DEVICES);
-
     cJSON *root = cJSON_CreateObject();
-    cJSON *arr  = cJSON_AddArrayToObject(root, "devices");
-    for (size_t i = 0; i < n; i++) {
-        cJSON *d = cJSON_CreateObject();
-        cJSON_AddStringToObject(d, "name", devs[i].name);
-        cJSON_AddStringToObject(d, "address", devs[i].addr);
-        cJSON_AddNumberToObject(d, "rssi", devs[i].rssi);
-        cJSON_AddItemToArray(arr, d);
-    }
+    add_device_array(root, "devices");
     return send_json(req, root);
 }
 
@@ -255,6 +267,13 @@ esp_err_t web_server_start(void)
     cfg.max_uri_handlers = 16;
     cfg.lru_purge_enable = true;
     cfg.stack_size       = 6144;
+    /*
+     * Must stay below CONFIG_LWIP_MAX_SOCKETS with room for the listener and
+     * the captive-portal DNS socket, or accept() fails with ENFILE and requests
+     * are refused before any handler runs.
+     */
+    cfg.max_open_sockets = 10;
+    cfg.backlog_conn     = 8;
 
     esp_err_t err = httpd_start(&s_server, &cfg);
     if (err != ESP_OK) {

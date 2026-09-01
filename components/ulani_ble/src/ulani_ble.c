@@ -22,6 +22,13 @@
 
 #include "ulani_ble_priv.h"
 
+/*
+ * Installs the NVS-backed key store. NimBLE defines this but does not declare
+ * it in any public header; ESP-IDF's own blecent example declares it by hand
+ * the same way.
+ */
+void ble_store_config_init(void);
+
 static const char *TAG = "ulani_ble";
 
 /* 128-bit UUIDs. NimBLE wants them little-endian, i.e. string order reversed. */
@@ -65,6 +72,9 @@ static struct {
     SemaphoreHandle_t op_sem;
     volatile uint8_t  op_expect;
     volatile uint16_t op_rsp;
+
+    SemaphoreHandle_t enc_sem;
+    volatile int      enc_status;
 
     SemaphoreHandle_t dat_sem;
     volatile bool     dat_armed;
@@ -145,6 +155,67 @@ static void sem_drain(SemaphoreHandle_t sem)
 {
     while (xSemaphoreTake(sem, 0) == pdTRUE) {
     }
+}
+
+/*
+ * NimBLE packs the layer that produced an error into the status code, which is
+ * the single most useful thing to know when a connection will not come up.
+ * Anything at or above 0x100 came from the peer or the controller, not from us.
+ */
+static const char *ble_hs_err_str(int status)
+{
+    switch (status) {
+    /* Host-side failures. */
+    case 0:                    return "ok";
+    case BLE_HS_EALREADY:      return "already in progress";
+    case BLE_HS_EINVAL:        return "invalid argument";
+    case BLE_HS_ENOTCONN:      return "not connected";
+    case BLE_HS_ENOTSUP:       return "unsupported";
+    case BLE_HS_ETIMEOUT:      return "host timeout";
+    case BLE_HS_EDONE:         return "done";
+    case BLE_HS_EBUSY:         return "busy";
+    case BLE_HS_EREJECT:       return "rejected";
+    case BLE_HS_EAUTHEN:       return "authentication required";
+    case BLE_HS_EAUTHOR:       return "authorisation required";
+    case BLE_HS_EENCRYPT:      return "encryption required";
+    case BLE_HS_ENOTSYNCED:    return "host not synced";
+
+    /* Controller / peer failures worth naming explicitly. */
+    case BLE_HS_HCI_ERR(BLE_ERR_AUTH_FAIL):
+        return "HCI: authentication failure -- the peer rejected our keys, "
+               "it probably still has a bond for a device we are not";
+    case BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING):
+        return "HCI: PIN or key missing -- the peer expects a bond we do not have";
+    case BLE_HS_HCI_ERR(BLE_ERR_CONN_SPVN_TMO):
+        return "HCI: supervision timeout";
+    case BLE_HS_HCI_ERR(BLE_ERR_CONN_ESTABLISHMENT):
+        return "HCI: connection failed to establish -- the peer did not answer, "
+               "the address may be stale or it is connected elsewhere";
+    case BLE_HS_HCI_ERR(BLE_ERR_REM_USER_CONN_TERM):
+        return "HCI: peer closed the connection";
+    case BLE_HS_HCI_ERR(BLE_ERR_CONN_TERM_LOCAL):
+        return "HCI: closed locally";
+    case BLE_HS_HCI_ERR(BLE_ERR_UNSUPP_REM_FEATURE):
+        return "HCI: unsupported remote feature";
+    case BLE_HS_HCI_ERR(BLE_ERR_UNIT_KEY_PAIRING):
+        return "HCI: pairing with unit key not supported";
+    default:
+        break;
+    }
+
+    if (status >= BLE_HS_ERR_SM_PEER_BASE) {
+        return "security manager error reported by the peer";
+    }
+    if (status >= BLE_HS_ERR_SM_US_BASE) {
+        return "security manager error raised locally";
+    }
+    if (status >= BLE_HS_ERR_HCI_BASE) {
+        return "controller (HCI) error";
+    }
+    if (status >= BLE_HS_ERR_ATT_BASE) {
+        return "ATT error from the peer";
+    }
+    return "unknown";
 }
 
 /* ------------------------------------------------------- GATT procedures */
@@ -269,18 +340,26 @@ static int on_disc_chr(uint16_t conn, const struct ble_gatt_error *err,
     return 0;
 }
 
+/*
+ * cb_arg points at the uint16_t that should receive the CCCD handle.
+ *
+ * ble_gattc_disc_all_dscs() takes the *owning characteristic* as its second
+ * argument, not a search range, and echoes it back here untouched -- so this
+ * has to be driven one characteristic at a time (see find_cccd). Discovery
+ * still runs to the end of the service, hence keeping only the first match:
+ * the first CCCD after a characteristic value handle belongs to that
+ * characteristic.
+ */
 static int on_disc_dsc(uint16_t conn, const struct ble_gatt_error *err,
                        uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc,
                        void *arg)
 {
-    (void)conn; (void)arg;
+    (void)conn; (void)chr_val_handle;
+    uint16_t *out = arg;
+
     if (err->status == 0 && dsc) {
-        if (ble_uuid_u16(&dsc->uuid.u) == BLE_GATT_DSC_CLT_CFG_UUID16) {
-            if (chr_val_handle == s.op_val) {
-                s.op_cccd = dsc->handle;
-            } else if (chr_val_handle == s.dat_val) {
-                s.dat_cccd = dsc->handle;
-            }
+        if (*out == 0 && ble_uuid_u16(&dsc->uuid.u) == BLE_GATT_DSC_CLT_CFG_UUID16) {
+            *out = dsc->handle;
         }
         return 0;
     }
@@ -306,23 +385,106 @@ static esp_err_t wait_proc(const char *what, uint32_t timeout_ms)
         return ESP_ERR_TIMEOUT;
     }
     if (s.proc_status != 0) {
-        ESP_LOGE(TAG, "%s failed status=%d", what, s.proc_status);
+        ESP_LOGE(TAG, "%s failed status=%d (%s)", what, s.proc_status,
+                 ble_hs_err_str(s.proc_status));
         return ESP_FAIL;
     }
     return ESP_OK;
 }
 
+static esp_err_t find_cccd(uint16_t chr_val_handle, uint16_t *out, const char *what)
+{
+    *out = 0;
+    sem_drain(s.proc_sem);
+
+    int rc = ble_gattc_disc_all_dscs(s.conn_handle, chr_val_handle, s.svc_end,
+                                     on_disc_dsc, out);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "disc_all_dscs(%s) rc=%d (%s)", what, rc, ble_hs_err_str(rc));
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = wait_proc("descriptor discovery", 10000);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (*out == 0) {
+        ESP_LOGE(TAG, "%s characteristic (handle %u) has no CCCD",
+                 what, chr_val_handle);
+        return ESP_ERR_NOT_FOUND;
+    }
+    ESP_LOGI(TAG, "%s: value=%u cccd=%u", what, chr_val_handle, *out);
+    return ESP_OK;
+}
+
+/*
+ * Pairs, then blocks until the link is actually encrypted. Firing
+ * ble_gap_security_initiate() and carrying straight on is a race: the next
+ * write can still go out over the unencrypted link and be rejected.
+ */
+static esp_err_t ensure_encrypted(void)
+{
+    sem_drain(s.enc_sem);
+    s.enc_status = -1;
+
+    int rc = ble_gap_security_initiate(s.conn_handle);
+    if (rc == BLE_HS_EALREADY) {
+        return ESP_OK;
+    }
+    if (rc != 0) {
+        ESP_LOGE(TAG, "cannot start pairing: rc=%d (%s)", rc, ble_hs_err_str(rc));
+        return rc == BLE_HS_ENOTSUP ? ESP_ERR_NOT_SUPPORTED : ESP_FAIL;
+    }
+
+    if (xSemaphoreTake(s.enc_sem, pdMS_TO_TICKS(15000)) != pdTRUE) {
+        ESP_LOGE(TAG, "pairing timed out");
+        return ESP_ERR_TIMEOUT;
+    }
+    return s.enc_status == 0 ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t write_cccd(uint16_t cccd_handle)
+{
+    uint8_t value[2] = { 0x01, 0x00 }; /* notifications */
+    return ulani_gatt_write(cccd_handle, value, sizeof(value), 5000);
+}
+
+/*
+ * The calendar refuses CCCD writes on an unencrypted link, so the first
+ * subscribe is what tells us pairing is needed. Reacting to that beats pairing
+ * up front: a unit that does not care never gets bothered.
+ */
 static esp_err_t subscribe(uint16_t cccd_handle, const char *what)
 {
     if (cccd_handle == 0) {
         ESP_LOGE(TAG, "%s characteristic has no CCCD", what);
         return ESP_ERR_NOT_FOUND;
     }
-    uint8_t value[2] = { 0x01, 0x00 }; /* notifications */
-    esp_err_t err = ulani_gatt_write(cccd_handle, value, sizeof(value), 5000);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "subscribe %s failed", what);
+
+    esp_err_t err = write_cccd(cccd_handle);
+    if (err == ESP_OK) {
+        return ESP_OK;
     }
+
+#if CONFIG_ULANI_BLE_ALLOW_PAIRING
+    if (s.write_status == BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_AUTHEN) ||
+        s.write_status == BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_ENC)) {
+        ESP_LOGI(TAG, "%s needs an encrypted link, pairing", what);
+
+        err = ensure_encrypted();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "pairing failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        err = write_cccd(cccd_handle);
+        if (err == ESP_OK) {
+            return ESP_OK;
+        }
+    }
+#endif
+
+    ESP_LOGE(TAG, "subscribe %s failed (write status=%d: %s)", what,
+             s.write_status, ble_hs_err_str(s.write_status));
     return err;
 }
 
@@ -374,7 +536,17 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         dev.rssi      = event->disc.rssi;
 
         if (seen_add(&dev)) {
-            ESP_LOGI(TAG, "found %s [%s] rssi=%d", dev.name, dev.addr, dev.rssi);
+            /*
+             * The address type matters when a connect fails: a resolvable
+             * private address (random, top bits 0b01) rotates every few
+             * minutes, so an address captured during a scan can already be
+             * stale by the time the user taps connect.
+             */
+            ESP_LOGI(TAG, "found %s [%s] type=%d%s rssi=%d",
+                     dev.name, dev.addr, dev.addr_type,
+                     (dev.addr_type == BLE_ADDR_RANDOM && (event->disc.addr.val[5] & 0xc0) == 0x40)
+                         ? " (resolvable private)" : "",
+                     dev.rssi);
             ulani_event_t ev = { .type = ULANI_EV_DEVICE_FOUND,
                                  .device_found = { .dev = dev } };
             ulani_emit(&ev);
@@ -395,18 +567,34 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s.conn_status = event->connect.status;
         if (event->connect.status == 0) {
             s.conn_handle = event->connect.conn_handle;
+            ESP_LOGI(TAG, "connected, handle=%u", s.conn_handle);
+        } else {
+            ESP_LOGE(TAG, "connect event status=%d (%s)", event->connect.status,
+                     ble_hs_err_str(event->connect.status));
         }
         xSemaphoreGive(s.conn_sem);
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT: {
-        ESP_LOGW(TAG, "disconnected reason=%d", event->disconnect.reason);
+        ESP_LOGW(TAG, "disconnected reason=%d (%s)", event->disconnect.reason,
+                 ble_hs_err_str(event->disconnect.reason));
         s.conn_handle = BLE_HS_CONN_HANDLE_NONE;
         s.op_val = s.dat_val = s.op_cccd = s.dat_cccd = 0;
         s.abort_req = true; /* unblock a transfer that is mid-flight */
         xSemaphoreGive(s.op_sem);
         xSemaphoreGive(s.dat_sem);
         xSemaphoreGive(s.write_sem);
+        /*
+         * A peer that accepts and then immediately drops the link reports it
+         * here rather than as a failed connect event, so release the connect
+         * path too instead of letting it sit out its full timeout.
+         */
+        if (s.state == ULANI_STATE_CONNECTING || s.state == ULANI_STATE_DISCOVERING) {
+            s.conn_status = event->disconnect.reason;
+            s.proc_status = event->disconnect.reason;
+            xSemaphoreGive(s.conn_sem);
+            xSemaphoreGive(s.proc_sem);
+        }
         ulani_set_state(ULANI_STATE_IDLE);
         ulani_event_t ev = { .type = ULANI_EV_DISCONNECTED,
                              .disconnected = { .reason = event->disconnect.reason } };
@@ -415,7 +603,15 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     }
 
     case BLE_GAP_EVENT_ENC_CHANGE:
-        ESP_LOGI(TAG, "encryption change status=%d", event->enc_change.status);
+        if (event->enc_change.status == 0) {
+            ESP_LOGI(TAG, "link encrypted");
+        } else {
+            ESP_LOGW(TAG, "encryption failed status=%d (%s)",
+                     event->enc_change.status,
+                     ble_hs_err_str(event->enc_change.status));
+        }
+        s.enc_status = event->enc_change.status;
+        xSemaphoreGive(s.enc_sem);
         return 0;
 
     case BLE_GAP_EVENT_MTU:
@@ -500,8 +696,9 @@ esp_err_t ulani_ble_init(const ulani_ble_cfg_t *cfg)
     s.conn_sem  = xSemaphoreCreateBinary();
     s.op_sem    = xSemaphoreCreateBinary();
     s.dat_sem   = xSemaphoreCreateBinary();
+    s.enc_sem   = xSemaphoreCreateBinary();
     if (!s.api_lock || !s.proc_sem || !s.write_sem || !s.conn_sem ||
-        !s.op_sem || !s.dat_sem) {
+        !s.op_sem || !s.dat_sem || !s.enc_sem) {
         return ESP_ERR_NO_MEM;
     }
 
@@ -511,20 +708,41 @@ esp_err_t ulani_ble_init(const ulani_ble_cfg_t *cfg)
         return err;
     }
 
+    /*
+     * The key store has to exist before anything can pair. Without it
+     * ble_hs_cfg.store_read_cb stays NULL and ble_store_read() answers
+     * BLE_HS_ENOTSUP, which surfaces as pairing being "unsupported" because
+     * ble_sm_pair_initiate() counts existing bonds before doing anything else.
+     * The same error appears at boot as "Failed to restore IRKs; status=8".
+     */
+    ble_store_config_init();
+
     ble_hs_cfg.sync_cb         = on_host_sync;
     ble_hs_cfg.reset_cb        = on_host_reset;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
-    ble_hs_cfg.sm_io_cap       = BLE_HS_IO_NO_INPUT_OUTPUT;
+    ble_hs_cfg.sm_io_cap       = BLE_HS_IO_NO_INPUT_OUTPUT; /* Just Works */
     ble_hs_cfg.sm_bonding      = 1;
     ble_hs_cfg.sm_mitm         = 0;
+#ifdef CONFIG_ULANI_BLE_SECURE_CONNECTIONS
     ble_hs_cfg.sm_sc           = 1;
-    ble_hs_cfg.sm_our_key_dist   = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+#else
+    ble_hs_cfg.sm_sc           = 0;
+#endif
+    /*
+     * Ask for the LTK and nothing else. Requesting identity keys as well makes
+     * the pairing request larger than it needs to be, and we have no use for
+     * the peer IRK: the calendar advertises a fixed public address.
+     */
+    ble_hs_cfg.sm_our_key_dist   = BLE_SM_PAIR_KEY_DIST_ENC;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
 
     /*
      * No ble_svc_gap_init() here: we build as a pure central, so the peripheral
      * GAP service is compiled out and there is nothing to register.
      */
+    ESP_LOGI(TAG, "NimBLE security manager compiled in: %s",
+             NIMBLE_BLE_SM ? "yes" : "NO -- pairing will be impossible");
+
     nimble_port_freertos_init(host_task);
     return ESP_OK;
 }
@@ -594,10 +812,12 @@ esp_err_t ulani_ble_connect(const char *addr_str, uint32_t timeout_ms)
     sem_drain(s.conn_sem);
     s.conn_status = -1;
 
+    ESP_LOGI(TAG, "connecting to %s (type %d)", addr_str, addr.type);
+
     esp_err_t err = ESP_OK;
     int rc = ble_gap_connect(s.own_addr_type, &addr, timeout_ms, NULL, gap_event, NULL);
     if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gap_connect rc=%d", rc);
+        ESP_LOGE(TAG, "ble_gap_connect rc=%d (%s)", rc, ble_hs_err_str(rc));
         err = ESP_FAIL;
         goto out;
     }
@@ -607,7 +827,8 @@ esp_err_t ulani_ble_connect(const char *addr_str, uint32_t timeout_ms)
         goto out;
     }
     if (s.conn_status != 0) {
-        ESP_LOGE(TAG, "connect failed status=%d", s.conn_status);
+        ESP_LOGE(TAG, "connect failed status=%d (%s)", s.conn_status,
+                 ble_hs_err_str(s.conn_status));
         err = ESP_FAIL;
         goto out;
     }
@@ -615,17 +836,6 @@ esp_err_t ulani_ble_connect(const char *addr_str, uint32_t timeout_ms)
     ulani_set_state(ULANI_STATE_DISCOVERING);
     s.abort_req = false;
 
-#if CONFIG_ULANI_BLE_INITIATE_SECURITY
-    /*
-     * The Node.js flow requires an OS-level pairing first, so the panel very
-     * likely wants an encrypted link. Ask for it, but do not give up if the
-     * device refuses: some units may be happy unencrypted.
-     */
-    rc = ble_gap_security_initiate(s.conn_handle);
-    if (rc != 0 && rc != BLE_HS_EALREADY) {
-        ESP_LOGW(TAG, "security_initiate rc=%d (continuing unencrypted)", rc);
-    }
-#endif
 
     /* MTU first: a 230-byte write needs at least 233. */
     sem_drain(s.proc_sem);
@@ -663,9 +873,11 @@ esp_err_t ulani_ble_connect(const char *addr_str, uint32_t timeout_ms)
         goto fail;
     }
 
-    sem_drain(s.proc_sem);
-    rc = ble_gattc_disc_all_dscs(s.conn_handle, s.svc_start, s.svc_end, on_disc_dsc, NULL);
-    err = (rc != 0) ? ESP_FAIL : wait_proc("descriptor discovery", 10000);
+    err = find_cccd(s.op_val, &s.op_cccd, "op");
+    if (err != ESP_OK) {
+        goto fail;
+    }
+    err = find_cccd(s.dat_val, &s.dat_cccd, "data");
     if (err != ESP_OK) {
         goto fail;
     }

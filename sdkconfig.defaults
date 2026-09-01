@@ -30,6 +30,11 @@ CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
 
+# Phones open several keep-alive connections at once and the UI polls on a
+# timer, so the default of 10 sockets runs out and accept() starts failing with
+# ENFILE. Leave headroom above whatever max_open_sockets web_server asks for.
+CONFIG_LWIP_MAX_SOCKETS=16
+
 # ---- misc ----
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 CONFIG_FREERTOS_HZ=1000
