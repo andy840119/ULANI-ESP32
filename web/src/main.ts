@@ -1,5 +1,6 @@
 import './style.css';
 import { api, type Status, type WifiStatus } from './lib/api';
+import { mountTesserae, renderTesserae, tesseraeMarkup } from './pages/tesserae';
 
 const STATE_LABEL: Record<Status['state'], string> = {
   off: '藍牙未啟動',
@@ -42,6 +43,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <nav class="tabs" id="tabs">
     <button data-tab="calendar" class="active">日曆</button>
     <button data-tab="wifi">WiFi</button>
+    <button data-tab="tesserae">tesserae</button>
   </nav>
 
   <div class="panel" data-panel="calendar">
@@ -106,6 +108,10 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         ${[1, 2, 3, 4].map((n) => `<button data-slot="${n}">${n}</button>`).join('')}
       </div>
     </section>
+  </div>
+
+  <div class="panel" data-panel="tesserae" hidden>
+    ${tesseraeMarkup()}
   </div>
 
   <div class="panel" data-panel="wifi" hidden>
@@ -456,6 +462,8 @@ $('#wifi-form').addEventListener('submit', (ev) => {
   });
 });
 
+mountTesserae(guard);
+
 /* ---------------------------------------------------------------- poll */
 
 /*
@@ -467,6 +475,7 @@ async function poll() {
   try {
     renderStatus(await api.status());
     renderWifi(await api.wifi());
+    renderTesserae(await api.tesserae());
   } catch {
     $('#s-state').textContent = '無法連上 ESP32';
   }

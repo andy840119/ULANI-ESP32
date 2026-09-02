@@ -318,3 +318,65 @@ footer {
 .panel > .card:last-child {
   margin-bottom: 1rem;
 }
+
+.fields select,
+.join select,
+.join input[type="url"],
+.join input[type="text"] {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+pre {
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  overflow-x: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+code {
+  font-size: 0.9em;
+}
+
+.hint.warn {
+  color: var(--danger);
+}
+
+.hint a {
+  color: var(--accent);
+}
+
+.choice {
+  margin: 0 0 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.choice legend {
+  padding: 0 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.choice input + input {
+  margin-top: 0.5rem;
+}
+
+.choice .hint {
+  margin: 0;
+}
+
+.notice .warn {
+  color: var(--danger);
+}

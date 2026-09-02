@@ -58,6 +58,54 @@ idf.py -p COM<n> flash monitor
 日曆讓出來（這個行為沿用原專案，讓官方 App 有機會連上）。兩種情況都只要重新
 連線一次就會再度啟用。
 
+### 讓 tesserae 自動產生並推送日曆
+
+[tesserae](https://github.com/dmellok/tesserae) 是一套可以自己架設的服務，負責產生
+日曆畫面——樣式、顯示內容、更新頻率全部在它的網頁上設定。在 NAS 或任何能跑 Docker
+的機器上：
+
+```sh
+mkdir tesserae && cd tesserae
+curl -fsSLO https://raw.githubusercontent.com/dmellok/tesserae/main/docker-compose.yml
+docker compose up -d
+```
+
+開 `http://<那台機器的IP>:8765` 設定密碼並走完精靈。
+
+> **server 網址請填區網 IP，不要填外網網域名稱。** tesserae 預設只把 `/renders/`
+> 的圖片給它認定在區網內的用戶端。透過外網網域連進去時（即使兩台其實在同一個區網，
+> 因為 hairpin NAT 的關係）server 看到的來源是公網位址，註冊和心跳都會成功，
+> 但下載圖片會被回 403。真要用外網網域的話，得到 Settings → Server 打開
+> 「Allow REST clients on public networks」。
+
+然後取得配對碼：
+
+**Settings → Devices → Add device → Transport 選 REST API → 按「+ Issue pairing code」**
+
+把碼複製下來，連同 server 網址填進本專案的「tesserae」分頁。用配對碼的話
+**板子型號由 server 自動辨識**（會顯示成 Seeed XIAO ePaper EE04 (7.3" Spectra 6)，
+內部代號 `seeed_ee04_73e6`），不需要手動選任何東西。
+
+另外兩種加入方式不建議：
+
+- **什麼都不填**：板子會自己報到，出現在 Settings → Devices 最上面的
+  **Discovered** 區塊，按 Register 核准即可。
+- **Add without pairing**：要自己挑板子型號和畫面尺寸，填錯 server 就會算出
+  日曆看不懂的格式。它給的是 **access token 不是配對碼**，而且必須連同你自己取的
+  Device id 一起填。
+
+**ESP32 不做任何影像處理。** `seeed_ee04_73e6` 的規格（800×480、4bpp packed）
+和 ULANI 完全相同，所以 server 算好的位元組可以直接送進日曆。唯一的轉換是調色盤
+順序——tesserae 用 Spectra-6 的排列，ULANI 用七色 ACeP 的排列，在下載串流時用一張
+16 格對照表換掉，見 [docs/protocol.md](docs/protocol.md)。
+
+更新時機由 server 決定：板子 `POST /status`，server 在回應裡給 `next_poll_s`，
+板子就照著等那麼久再回來問。tesserae 另有 MQTT/SSE 的推送通道，但它自己的文件把
+SSE 定位成「最佳化，而非正確性需求」，而且只給有觸控的面板做局部更新用，所以這裡
+和官方的 ESP32 韌體一樣走 REST 輪詢。
+
+> server 關機時日曆就不會更新。
+
 ### 從電腦瀏覽器操作（選用）
 
 介面的「WiFi」分頁可以讓 ESP32 連上你家裡的 WiFi。連上之後畫面會顯示一個
@@ -91,6 +139,8 @@ components/
   ulani_ble/        BLE central + 協定層。只認 opcode 和 byte stream，
                     不碰 HTTP、檔案系統或影像格式
   ulani_app/        商業邏輯：唯一能呼叫 ulani_ble 的 task、keepalive、狀態快照
+  ulani_store/      四張成品的 SPIFFS 儲存，上傳與傳輸都是串流，不進 RAM
+  tesserae/         tesserae server 的 REST client 與調色盤轉換
   net_provision/    SoftAP + captive portal DNS
   web_server/       HTTP：REST 端點 + 內嵌的前端靜態檔
 main/               只做啟動組裝
@@ -116,6 +166,10 @@ docs/
 | POST | `/api/connect` | `{"address": "aa:bb:cc:dd:ee:ff"}` |
 | POST | `/api/disconnect` | |
 | POST | `/api/forget-device` | 忘記記住的日曆並停止自動連線 |
+| GET | `/api/tesserae` | tesserae 連線狀態 |
+| POST | `/api/tesserae/connect` | `{"serverUrl", "pairingCode", "deviceId", "token", "slot"}` |
+| POST | `/api/tesserae/poll` | 不等排程，立刻抓一次 |
+| POST | `/api/tesserae/forget` | 清除 server 設定與 token |
 | POST | `/api/refresh` | 重讀電量與目前相框 |
 | POST | `/api/slot` | `{"slot": 1}` |
 | POST | `/api/test-image` | `{"slot": 1, "seed": 0, "activate": false}` |
