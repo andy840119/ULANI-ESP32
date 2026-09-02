@@ -14,6 +14,7 @@
 
 #include "net_provision.h"
 #include "ulani_app.h"
+#include "ulani_store.h"
 #include "web_server.h"
 
 static const char *TAG = "main";
@@ -51,6 +52,9 @@ void app_main(void)
 
     /* Joins the user's own network if one has been saved. The AP stays up. */
     ESP_ERROR_CHECK(net_sta_start());
+
+    /* Before the app layer, which reads the slot contents on startup. */
+    ESP_ERROR_CHECK(ulani_store_init());
 
     ESP_ERROR_CHECK(ulani_app_start());
     ESP_ERROR_CHECK(web_server_start());
