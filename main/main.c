@@ -13,6 +13,7 @@
 #include "nvs_flash.h"
 
 #include "net_provision.h"
+#include "tesserae.h"
 #include "ulani_app.h"
 #include "ulani_store.h"
 #include "web_server.h"
@@ -27,6 +28,14 @@ static void build_ssid(char *out, size_t len)
     uint8_t mac[6] = { 0 };
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     snprintf(out, len, "ULANI-Setup-%02X%02X", mac[4], mac[5]);
+}
+
+static void on_tesserae_frame(uint8_t slot, void *user)
+{
+    (void)user;
+    ESP_LOGI(TAG, "tesserae stored a new frame for slot %u; sending it", slot);
+    ulani_app_slots_changed();
+    ulani_app_cmd_send_slot(slot);
 }
 
 void app_main(void)
@@ -57,6 +66,15 @@ void app_main(void)
     ESP_ERROR_CHECK(ulani_store_init());
 
     ESP_ERROR_CHECK(ulani_app_start());
+
+    /*
+     * A frame that has just landed is worth showing straight away; the queue
+     * takes it from here so the tesserae task is not held up by a BLE
+     * transfer that runs for half a minute.
+     */
+    tesserae_cfg_t tess = { .on_frame = on_tesserae_frame };
+    ESP_ERROR_CHECK(tesserae_start(&tess));
+
     ESP_ERROR_CHECK(web_server_start());
 
     ESP_LOGI(TAG, "ready -- join \"%s\" and open http://192.168.4.1/", ssid);
