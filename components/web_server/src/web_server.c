@@ -12,6 +12,7 @@
 
 #include "net_provision.h"
 #include "ulani_app.h"
+#include "ulani_store.h"
 #include "web_server.h"
 
 static const char *TAG = "web";
@@ -115,6 +116,15 @@ static esp_err_t get_status(httpd_req_t *req)
     cJSON_AddStringToObject(root, "address", st.connected_addr);
     cJSON_AddStringToObject(root, "name", st.connected_name);
     cJSON_AddStringToObject(root, "error", st.last_error);
+
+    cJSON *slots = cJSON_AddArrayToObject(root, "slots");
+    for (int i = 0; i < ULANI_SLOT_MAX; i++) {
+        cJSON *s = cJSON_CreateObject();
+        cJSON_AddNumberToObject(s, "slot", i + 1);
+        cJSON_AddBoolToObject(s, "stored", st.slots[i].present);
+        cJSON_AddNumberToObject(s, "crc", st.slots[i].crc);
+        cJSON_AddItemToArray(slots, s);
+    }
 
     if (st.saved_addr[0]) {
         cJSON *saved = cJSON_AddObjectToObject(root, "savedDevice");
@@ -247,6 +257,155 @@ static esp_err_t post_test(httpd_req_t *req)
                          : send_err(req, "503 Service Unavailable", "busy");
 }
 
+/* ------------------------------------------------------------------ slots */
+
+/* Slot number from "?slot=N". Returns 0 when absent or out of range. */
+static uint8_t slot_from_query(httpd_req_t *req)
+{
+    char query[32];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        return 0;
+    }
+    char value[8];
+    if (httpd_query_key_value(query, "slot", value, sizeof(value)) != ESP_OK) {
+        return 0;
+    }
+    int slot = atoi(value);
+    return (slot >= ULANI_SLOT_MIN && slot <= ULANI_SLOT_MAX) ? (uint8_t)slot : 0;
+}
+
+/*
+ * Takes one finished payload as a raw octet stream. 192000 bytes is far too
+ * much to buffer, so it goes straight to the filesystem a few kilobytes at a
+ * time and the connection is the only thing holding state.
+ */
+static esp_err_t post_upload(httpd_req_t *req)
+{
+    uint8_t slot = slot_from_query(req);
+    if (slot == 0) {
+        return send_err(req, "400 Bad Request", "slot must be 1..4");
+    }
+    if (req->content_len != ULANI_PAYLOAD_BYTES) {
+        ESP_LOGW(TAG, "upload for slot %u is %d bytes, expected %u",
+                 slot, req->content_len, (unsigned)ULANI_PAYLOAD_BYTES);
+        return send_err(req, "400 Bad Request", "payload must be exactly 192000 bytes");
+    }
+
+    ulani_store_writer_t writer;
+    esp_err_t err = ulani_store_write_begin(slot, &writer);
+    if (err != ESP_OK) {
+        return send_err(req, "500 Internal Server Error", "cannot open storage");
+    }
+
+    static char buf[2048];
+    int remaining = req->content_len;
+
+    while (remaining > 0) {
+        int want = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
+        int got  = httpd_req_recv(req, buf, want);
+        if (got <= 0) {
+            ulani_store_write_abort(&writer);
+            if (got == HTTPD_SOCK_ERR_TIMEOUT) {
+                return send_err(req, "408 Request Timeout", "upload stalled");
+            }
+            return ESP_FAIL; /* the socket is gone; nothing to reply to */
+        }
+        if (ulani_store_write(&writer, buf, (size_t)got) != ESP_OK) {
+            ulani_store_write_abort(&writer);
+            return send_err(req, "500 Internal Server Error", "write failed");
+        }
+        remaining -= got;
+    }
+
+    err = ulani_store_write_commit(&writer);
+    if (err != ESP_OK) {
+        return send_err(req, "500 Internal Server Error", "could not store the image");
+    }
+
+    ulani_app_slots_changed();
+    return send_ok(req);
+}
+
+/*
+ * Streams a stored payload back out. The browser unpacks it to a canvas, which
+ * is how a slot can still be previewed after the page has been reloaded --
+ * there is no other copy of the image anywhere.
+ */
+static esp_err_t get_slot_download(httpd_req_t *req)
+{
+    uint8_t slot = slot_from_query(req);
+    if (slot == 0) {
+        return send_err(req, "400 Bad Request", "slot must be 1..4");
+    }
+
+    ulani_store_reader_t reader;
+    ulani_payload_src_t  src;
+    if (ulani_store_payload_src(slot, &reader, &src) != ESP_OK) {
+        return send_err(req, "404 Not Found", "nothing stored for that slot");
+    }
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    static uint8_t buf[2048];
+    esp_err_t err = ESP_OK;
+
+    for (size_t off = 0; off < ULANI_PAYLOAD_BYTES; ) {
+        size_t n = ULANI_PAYLOAD_BYTES - off;
+        if (n > sizeof(buf)) {
+            n = sizeof(buf);
+        }
+        if (src.read(src.ctx, off, buf, n) != ESP_OK) {
+            err = ESP_FAIL;
+            break;
+        }
+        if (httpd_resp_send_chunk(req, (const char *)buf, n) != ESP_OK) {
+            err = ESP_FAIL; /* client went away */
+            break;
+        }
+        off += n;
+    }
+
+    ulani_store_reader_close(&reader);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return err;
+}
+
+static esp_err_t post_slot_send(httpd_req_t *req)
+{
+    cJSON *body = read_json_body(req);
+    if (!body) {
+        return send_err(req, "400 Bad Request", "invalid json");
+    }
+    cJSON *slot = cJSON_GetObjectItem(body, "slot");
+    uint8_t n = cJSON_IsNumber(slot) ? (uint8_t)slot->valuedouble : 0;
+    cJSON_Delete(body);
+
+    esp_err_t err = ulani_app_cmd_send_slot(n);
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_err(req, "400 Bad Request", "slot must be 1..4");
+    }
+    return err == ESP_OK ? send_ok(req)
+                         : send_err(req, "503 Service Unavailable", "busy");
+}
+
+static esp_err_t post_slot_clear(httpd_req_t *req)
+{
+    cJSON *body = read_json_body(req);
+    if (!body) {
+        return send_err(req, "400 Bad Request", "invalid json");
+    }
+    cJSON *slot = cJSON_GetObjectItem(body, "slot");
+    uint8_t n = cJSON_IsNumber(slot) ? (uint8_t)slot->valuedouble : 0;
+    cJSON_Delete(body);
+
+    if (ulani_store_delete(n) != ESP_OK) {
+        return send_err(req, "400 Bad Request", "slot must be 1..4");
+    }
+    ulani_app_slots_changed();
+    return send_ok(req);
+}
+
 /* -------------------------------------------------------------------- wifi */
 
 static esp_err_t get_wifi(httpd_req_t *req)
@@ -355,7 +514,7 @@ static esp_err_t redirect_to_root(httpd_req_t *req, httpd_err_code_t err)
 esp_err_t web_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 20;
+    cfg.max_uri_handlers = 24;
     cfg.lru_purge_enable = true;
     cfg.stack_size       = 6144;
     /*
@@ -365,6 +524,9 @@ esp_err_t web_server_start(void)
      */
     cfg.max_open_sockets = 10;
     cfg.backlog_conn     = 8;
+    /* Uploads are large and the radio is shared with BLE; be patient. */
+    cfg.recv_wait_timeout = 20;
+    cfg.send_wait_timeout = 20;
 
     esp_err_t err = httpd_start(&s_server, &cfg);
     if (err != ESP_OK) {
@@ -385,6 +547,10 @@ esp_err_t web_server_start(void)
         { .uri = "/api/forget-device", .method = HTTP_POST, .handler = post_forget_device },
         { .uri = "/api/slot",          .method = HTTP_POST, .handler = post_slot },
         { .uri = "/api/test-image",    .method = HTTP_POST, .handler = post_test },
+        { .uri = "/api/upload",        .method = HTTP_POST, .handler = post_upload },
+        { .uri = "/api/slot/download", .method = HTTP_GET,  .handler = get_slot_download },
+        { .uri = "/api/slot/send",     .method = HTTP_POST, .handler = post_slot_send },
+        { .uri = "/api/slot/clear",    .method = HTTP_POST, .handler = post_slot_clear },
         { .uri = "/api/wifi",          .method = HTTP_GET,  .handler = get_wifi },
         { .uri = "/api/wifi/scan",     .method = HTTP_POST, .handler = post_wifi_scan },
         { .uri = "/api/wifi/connect",  .method = HTTP_POST, .handler = post_wifi_connect },
