@@ -119,19 +119,38 @@ static void creds_erase(void)
 
 /* ------------------------------------------------------------------ events */
 
+/*
+ * Periodic rather than one-shot, and driven by the timer instead of by the
+ * disconnect event. esp_wifi_connect() can fail without producing a
+ * disconnect -- when a previous attempt is still in flight, for instance --
+ * and a retry chain that only advances on that event stops dead the first time
+ * it happens, leaving the board off the network until it is power cycled.
+ */
 static void retry_timer_cb(void *arg)
 {
     (void)arg;
-    if (w.configured) {
+
+    if (!w.configured || w.state == NET_STA_CONNECTED) {
+        return;
+    }
+
+    esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+        ESP_LOGW(TAG, "join attempt could not start: %s", esp_err_to_name(err));
+    } else {
         ESP_LOGI(TAG, "retrying join to \"%s\"", w.ssid);
-        esp_wifi_connect();
     }
 }
 
-static void schedule_retry(void)
+static void retry_start(void)
 {
     esp_timer_stop(w.retry_timer);
-    esp_timer_start_once(w.retry_timer, RETRY_DELAY_US);
+    esp_timer_start_periodic(w.retry_timer, RETRY_DELAY_US);
+}
+
+static void retry_stop(void)
+{
+    esp_timer_stop(w.retry_timer);
 }
 
 static void collect_scan_results(void)
@@ -217,7 +236,7 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 
         ESP_LOGW(TAG, "station disconnected, reason=%d", e->reason);
         if (w.configured) {
-            schedule_retry();
+            retry_start();
         }
         break;
     }
@@ -246,6 +265,7 @@ static void ip_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     snprintf(w.ip, sizeof(w.ip), IPSTR, IP2STR(&e->ip_info.ip));
     unlock();
 
+    retry_stop();
     ESP_LOGI(TAG, "joined \"%s\", reachable at http://%s/", w.ssid, w.ip);
 }
 
@@ -352,6 +372,7 @@ esp_err_t net_sta_start(void)
     unlock();
 
     ESP_LOGI(TAG, "joining stored network \"%s\"", ssid);
+    retry_start();
     return esp_wifi_connect();
 }
 
@@ -383,10 +404,10 @@ esp_err_t net_sta_connect(const char *ssid, const char *password)
     strlcpy(w.ssid, ssid, sizeof(w.ssid));
     unlock();
 
-    esp_timer_stop(w.retry_timer);
     esp_wifi_disconnect();
 
     ESP_LOGI(TAG, "joining \"%s\"", ssid);
+    retry_start();
     return esp_wifi_connect();
 }
 
@@ -402,7 +423,7 @@ esp_err_t net_sta_forget(void)
     w.retries    = 0;
     unlock();
 
-    esp_timer_stop(w.retry_timer);
+    retry_stop();
     esp_wifi_disconnect();
 
     ESP_LOGI(TAG, "stored network erased");
