@@ -46,6 +46,25 @@ idf.py -p COM<n> flash monitor
 日曆讓出來（這個行為沿用原專案，讓官方 App 有機會連上）。兩種情況都只要重新
 連線一次就會再度啟用。
 
+### 上傳自己的圖片
+
+「傳圖」分頁可以為四張相框各上傳一張圖片。選好檔案後**瀏覽器會立刻把它處理成
+日曆的七色並顯示預覽**，那張預覽就是實際會被送出去的畫面。確認後按「上傳」存進
+ESP32，再按「送到日曆」透過藍牙傳過去。
+
+「處理方式」可以調整旋轉與比例：
+
+| 選項 | 行為 |
+|---|---|
+| 完整顯示（黑色留邊） | 等比縮放，留邊填純黑 |
+| 填滿畫面 | 裁掉超出的部分 |
+| 完整顯示（暗化原圖填滿留邊） | `dither.js` 原本的效果 |
+
+**影像處理全部在瀏覽器裡完成**（`web/src/lib/ulani-image.ts`），ESP32 收到的已經是
+成品——palette index 的位元組流。原圖從不上傳，所以四張圖在 flash 裡只佔
+4 × 192000 = 768 KB。這也是唯一可行的做法：800×480 的誤差擴散需要超過 1 MB 的
+工作記憶體，而 C3 只有 400 KB。
+
 ### 從電腦瀏覽器操作（選用）
 
 介面的「WiFi」分頁可以讓 ESP32 連上你家裡的 WiFi。連上之後畫面會顯示一個
@@ -79,10 +98,12 @@ components/
   ulani_ble/        BLE central + 協定層。只認 opcode 和 byte stream，
                     不碰 HTTP、檔案系統或影像格式
   ulani_app/        商業邏輯：唯一能呼叫 ulani_ble 的 task、keepalive、狀態快照
+  ulani_store/      四張成品的 SPIFFS 儲存，上傳與傳輸都是串流，不進 RAM
   net_provision/    SoftAP + captive portal DNS
   web_server/       HTTP：REST 端點 + 內嵌的前端靜態檔
 main/               只做啟動組裝
 web/                前端（獨立 npm 專案，不受 idf.py 管）
+  src/lib/ulani-image.ts   縮放/裁切/旋轉、dither、打包——所有影像處理都在這
 tools/
   build_web.py      前端 build → gzip → 韌體
   verify_payload.*  拿 C 實作跟照抄 JS 語意的 reference 對答案
@@ -102,6 +123,10 @@ docs/protocol.md    逆推出來的協定筆記，含刻意保留的怪癖
 | POST | `/api/connect` | `{"address": "aa:bb:cc:dd:ee:ff"}` |
 | POST | `/api/disconnect` | |
 | POST | `/api/forget-device` | 忘記記住的日曆並停止自動連線 |
+| POST | `/api/upload?slot=N` | 上傳 192000 bytes 的成品（`application/octet-stream`） |
+| GET | `/api/slot/download?slot=N` | 取回已存的成品，用於重新整理後的預覽 |
+| POST | `/api/slot/send` | `{"slot": 1}`，把已存的圖傳到日曆 |
+| POST | `/api/slot/clear` | `{"slot": 1}` |
 | POST | `/api/refresh` | 重讀電量與目前相框 |
 | POST | `/api/slot` | `{"slot": 1}` |
 | POST | `/api/test-image` | `{"slot": 1, "seed": 0}` |

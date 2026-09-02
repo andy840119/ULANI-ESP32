@@ -304,3 +304,89 @@ footer {
 .panel > .card:last-child {
   margin-bottom: 1rem;
 }
+
+.fields {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.fields label {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.fields span {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.fields select {
+  width: 100%;
+  padding: 0.5rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.slot-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.slot-head h2 {
+  margin: 0;
+}
+
+.tag {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0.75rem 0 1rem;
+  aspect-ratio: 800 / 480;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.preview canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.preview .placeholder {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.preview.loadable {
+  cursor: pointer;
+}
+
+.filebtn {
+  display: inline-block;
+  padding: 0.55rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.filebtn input {
+  display: none;
+}

@@ -1,5 +1,6 @@
 import './style.css';
 import { api, type Status, type WifiStatus } from './lib/api';
+import { mountSlots, renderSlots, slotsMarkup } from './pages/slots';
 
 const STATE_LABEL: Record<Status['state'], string> = {
   off: '藍牙未啟動',
@@ -39,11 +40,12 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   </section>
 
   <nav class="tabs" id="tabs">
-    <button data-tab="calendar" class="active">日曆</button>
+    <button data-tab="setup" class="active">初始化</button>
     <button data-tab="wifi">WiFi</button>
+    <button data-tab="images">傳圖</button>
   </nav>
 
-  <div class="panel" data-panel="calendar">
+  <div class="panel" data-panel="setup">
     <section class="card">
       <h2>1. 連上日曆</h2>
       <ol class="steps">
@@ -96,6 +98,10 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         ${[1, 2, 3, 4].map((n) => `<button data-slot="${n}">${n}</button>`).join('')}
       </div>
     </section>
+  </div>
+
+  <div class="panel" data-panel="images" hidden>
+    ${slotsMarkup()}
   </div>
 
   <div class="panel" data-panel="wifi" hidden>
@@ -176,7 +182,7 @@ $('#tabs').addEventListener('click', (ev) => {
  * Joining a network reloads nothing, but the browser may well be pointed at a
  * new address afterwards -- remembering the tab keeps the user where they were.
  */
-selectTab(localStorage.getItem(TAB_KEY) ?? 'calendar');
+selectTab(localStorage.getItem(TAB_KEY) ?? 'setup');
 
 function setBusy(value: boolean) {
   busy = value;
@@ -287,6 +293,7 @@ function renderStatus(st: Status) {
 
   renderDevices(st.devices, st.state === 'scanning');
   renderSaved(st);
+  renderSlots(st);
 }
 
 function renderSaved(st: Status) {
@@ -424,6 +431,8 @@ $('#wifi-form').addEventListener('submit', (ev) => {
     hideJoinForm();
   });
 });
+
+mountSlots(guard);
 
 /* ---------------------------------------------------------------- poll */
 
