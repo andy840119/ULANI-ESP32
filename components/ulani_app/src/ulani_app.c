@@ -33,6 +33,7 @@ typedef enum {
     CMD_SET_SLOT,
     CMD_REFRESH,
     CMD_TEST_IMAGE,
+    CMD_SEND_SLOT,
     CMD_FORGET_DEVICE,
 } cmd_id_t;
 
@@ -134,6 +135,18 @@ static void saved_erase(void)
     }
     memset(&a.saved, 0, sizeof(a.saved));
     ESP_LOGI(TAG, "forgot the remembered device");
+}
+
+void ulani_app_slots_changed(void)
+{
+    ulani_slot_info_t info[ULANI_SLOT_MAX];
+    for (uint8_t slot = ULANI_SLOT_MIN; slot <= ULANI_SLOT_MAX; slot++) {
+        ulani_store_info(slot, &info[slot - 1]);
+    }
+
+    status_lock();
+    memcpy(a.status.slots, info, sizeof(info));
+    status_unlock();
 }
 
 static void publish_saved(void)
@@ -360,6 +373,32 @@ static void handle_cmd(const cmd_t *cmd)
         }
         break;
 
+    case CMD_SEND_SLOT: {
+        clear_error();
+
+        ulani_store_reader_t reader;
+        ulani_payload_src_t  src;
+
+        err = ulani_store_payload_src(cmd->slot, &reader, &src);
+        if (err != ESP_OK) {
+            set_error("no image stored for that slot", err);
+            break;
+        }
+
+        ESP_LOGI(TAG, "sending stored image to slot %u", cmd->slot);
+        err = ulani_ble_send_image(cmd->slot, &src);
+        ulani_store_reader_close(&reader);
+
+        if (err != ESP_OK) {
+            set_error("send image", err);
+        } else {
+            /* Make the result visible immediately, like helloworld.js does. */
+            ulani_ble_set_active_slot(cmd->slot);
+        }
+        a.last_op_us = esp_timer_get_time();
+        break;
+    }
+
     case CMD_TEST_IMAGE: {
         clear_error();
         static uint32_t seed;
@@ -511,6 +550,7 @@ esp_err_t ulani_app_start(void)
     saved_load();
     a.auto_connect = (a.saved.addr[0] != 0);
     publish_saved();
+    ulani_app_slots_changed();
 
     ulani_ble_cfg_t cfg = { .event_cb = on_ble_event, .event_user = NULL };
     esp_err_t err = ulani_ble_init(&cfg);
@@ -597,6 +637,15 @@ esp_err_t ulani_app_cmd_set_slot(uint8_t slot)
 esp_err_t ulani_app_cmd_refresh(void)
 {
     cmd_t cmd = { .id = CMD_REFRESH };
+    return post(&cmd);
+}
+
+esp_err_t ulani_app_cmd_send_slot(uint8_t slot)
+{
+    if (slot < ULANI_SLOT_MIN || slot > ULANI_SLOT_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    cmd_t cmd = { .id = CMD_SEND_SLOT, .slot = slot };
     return post(&cmd);
 }
 
