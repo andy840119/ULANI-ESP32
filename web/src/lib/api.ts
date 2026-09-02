@@ -55,6 +55,20 @@ export interface WifiStatus {
   networks: WifiNetwork[];
 }
 
+export type TesseraeState = 'disabled' | 'unregistered' | 'idle' | 'working' | 'error';
+
+export interface TesseraeStatus {
+  state: TesseraeState;
+  serverUrl: string;
+  deviceId: string;
+  registered: boolean;
+  slot: number;
+  nextPollS: number;
+  secondsUntilPoll: number;
+  lastFrameAt: number;
+  error: string;
+}
+
 class ApiError extends Error {}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -86,6 +100,17 @@ export const api = {
   setSlot: (slot: number) => post('/api/slot', { slot }),
   testImage: (slot: number, seed?: number, activate = false) =>
     post('/api/test-image', { slot, seed: seed ?? 0, activate }),
+
+  tesserae: () => request<TesseraeStatus>('/api/tesserae'),
+  tesseraeConnect: (opts: {
+    serverUrl: string;
+    pairingCode: string;
+    deviceId: string;
+    token: string;
+    slot: number;
+  }) => post('/api/tesserae/connect', opts),
+  tesseraePoll: () => post('/api/tesserae/poll'),
+  tesseraeForget: () => post('/api/tesserae/forget'),
 
   wifi: () => request<WifiStatus>('/api/wifi'),
   wifiScan: () => post('/api/wifi/scan'),

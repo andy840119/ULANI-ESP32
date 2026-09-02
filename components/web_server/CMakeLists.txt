@@ -19,5 +19,5 @@ idf_component_register(
     SRCS "src/web_server.c"
     INCLUDE_DIRS "include"
     REQUIRES esp_http_server
-    PRIV_REQUIRES json ulani_app net_provision
+    PRIV_REQUIRES json ulani_app tesserae net_provision
     EMBED_FILES ${WWW_FILES})

@@ -11,6 +11,7 @@
 #include "esp_log.h"
 
 #include "net_provision.h"
+#include "tesserae.h"
 #include "ulani_app.h"
 #include "web_server.h"
 
@@ -258,6 +259,76 @@ static esp_err_t post_test(httpd_req_t *req)
                          : send_err(req, "503 Service Unavailable", "busy");
 }
 
+/* --------------------------------------------------------------- tesserae */
+
+static esp_err_t get_tesserae(httpd_req_t *req)
+{
+    tesserae_status_t st;
+    tesserae_get_status(&st);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "state", tesserae_state_str(st.state));
+    cJSON_AddStringToObject(root, "serverUrl", st.server_url);
+    cJSON_AddStringToObject(root, "deviceId", st.device_id);
+    cJSON_AddBoolToObject(root, "registered", st.registered);
+    cJSON_AddNumberToObject(root, "slot", st.slot);
+    cJSON_AddNumberToObject(root, "nextPollS", st.next_poll_s);
+    cJSON_AddNumberToObject(root, "secondsUntilPoll", st.seconds_until_poll);
+    cJSON_AddNumberToObject(root, "lastFrameAt", st.last_frame_at);
+    cJSON_AddStringToObject(root, "error", st.last_error);
+    return send_json(req, root);
+}
+
+static esp_err_t post_tesserae_connect(httpd_req_t *req)
+{
+    cJSON *body = read_json_body(req);
+    if (!body) {
+        return send_err(req, "400 Bad Request", "invalid json");
+    }
+
+    cJSON *url   = cJSON_GetObjectItem(body, "serverUrl");
+    cJSON *code  = cJSON_GetObjectItem(body, "pairingCode");
+    cJSON *devid = cJSON_GetObjectItem(body, "deviceId");
+    cJSON *token = cJSON_GetObjectItem(body, "token");
+    cJSON *slot  = cJSON_GetObjectItem(body, "slot");
+
+    if (!cJSON_IsString(url) || url->valuestring[0] == 0) {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "serverUrl required");
+    }
+
+    esp_err_t err = tesserae_configure(
+        url->valuestring,
+        cJSON_IsString(code)  ? code->valuestring  : "",
+        cJSON_IsString(devid) ? devid->valuestring : "",
+        cJSON_IsString(token) ? token->valuestring : "",
+        cJSON_IsNumber(slot) ? (uint8_t)slot->valuedouble : 1);
+    cJSON_Delete(body);
+
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_err(req, "400 Bad Request",
+                        "a token also needs the device id it was issued for, "
+                        "and the fields have length limits");
+    }
+    return err == ESP_OK ? send_ok(req)
+                         : send_err(req, "500 Internal Server Error", "could not save");
+}
+
+static esp_err_t post_tesserae_forget(httpd_req_t *req)
+{
+    return tesserae_forget() == ESP_OK
+               ? send_ok(req)
+               : send_err(req, "500 Internal Server Error", "could not erase");
+}
+
+static esp_err_t post_tesserae_poll(httpd_req_t *req)
+{
+    if (tesserae_poll_now() == ESP_ERR_INVALID_STATE) {
+        return send_err(req, "409 Conflict", "no server configured");
+    }
+    return send_ok(req);
+}
+
 /* -------------------------------------------------------------------- wifi */
 
 static esp_err_t get_wifi(httpd_req_t *req)
@@ -366,7 +437,7 @@ static esp_err_t redirect_to_root(httpd_req_t *req, httpd_err_code_t err)
 esp_err_t web_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 20;
+    cfg.max_uri_handlers = 28;
     cfg.lru_purge_enable = true;
     cfg.stack_size       = 6144;
     /*
@@ -396,6 +467,10 @@ esp_err_t web_server_start(void)
         { .uri = "/api/forget-device", .method = HTTP_POST, .handler = post_forget_device },
         { .uri = "/api/slot",          .method = HTTP_POST, .handler = post_slot },
         { .uri = "/api/test-image",    .method = HTTP_POST, .handler = post_test },
+        { .uri = "/api/tesserae",         .method = HTTP_GET,  .handler = get_tesserae },
+        { .uri = "/api/tesserae/connect", .method = HTTP_POST, .handler = post_tesserae_connect },
+        { .uri = "/api/tesserae/forget",  .method = HTTP_POST, .handler = post_tesserae_forget },
+        { .uri = "/api/tesserae/poll",    .method = HTTP_POST, .handler = post_tesserae_poll },
         { .uri = "/api/wifi",          .method = HTTP_GET,  .handler = get_wifi },
         { .uri = "/api/wifi/scan",     .method = HTTP_POST, .handler = post_wifi_scan },
         { .uri = "/api/wifi/connect",  .method = HTTP_POST, .handler = post_wifi_connect },
