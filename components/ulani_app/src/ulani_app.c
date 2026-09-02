@@ -26,6 +26,7 @@ static const char *TAG = "ulani_app";
  */
 #define AUTO_CONNECT_RETRY_US (30 * 1000 * 1000)
 
+
 typedef enum {
     CMD_SCAN,
     CMD_CONNECT,
@@ -292,6 +293,37 @@ static void refresh_device_info(void)
     a.last_op_us = esp_timer_get_time();
 }
 
+/*
+ * Sending needs a link, and by design there often is not one: the firmware
+ * hands the calendar back after five minutes idle so the official app can have
+ * a turn, and a frame from Tesserae arrives on the server's schedule rather
+ * than ours -- fifteen minutes later, with the radio long since released.
+ *
+ * So a send reaches for the calendar itself instead of failing. The idle
+ * release stays deliberate; it just no longer means the next image is lost.
+ */
+static esp_err_t ensure_connected(void)
+{
+    if (ulani_ble_is_connected()) {
+        return ESP_OK;
+    }
+    if (a.saved.addr[0] == 0) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_LOGI(TAG, "not connected; reaching %s first", a.saved.addr);
+    status_lock();
+    strlcpy(a.status.connected_addr, a.saved.addr, sizeof(a.status.connected_addr));
+    status_unlock();
+
+    esp_err_t err = ulani_ble_connect(a.saved.addr, 15000);
+    if (err != ESP_OK) {
+        return err;
+    }
+    refresh_device_info();
+    return ESP_OK;
+}
+
 static void handle_cmd(const cmd_t *cmd)
 {
     esp_err_t err;
@@ -376,6 +408,15 @@ static void handle_cmd(const cmd_t *cmd)
     case CMD_SEND_SLOT: {
         clear_error();
 
+        err = ensure_connected();
+        if (err != ESP_OK) {
+            set_error(err == ESP_ERR_NOT_FOUND
+                          ? "no calendar remembered; connect to one first"
+                          : "could not reach the calendar",
+                      err);
+            break;
+        }
+
         ulani_store_reader_t reader;
         ulani_payload_src_t  src;
 
@@ -392,8 +433,17 @@ static void handle_cmd(const cmd_t *cmd)
         if (err != ESP_OK) {
             set_error("send image", err);
         } else {
-            /* Make the result visible immediately, like helloworld.js does. */
-            ulani_ble_set_active_slot(cmd->slot);
+            /*
+             * Repaint only if this page is the one on screen -- otherwise the
+             * panel keeps showing an image the slot no longer holds. Ask it
+             * live rather than trusting the snapshot, which a button press on
+             * the device makes stale (matches CMD_TEST_IMAGE below).
+             */
+            uint8_t active = 0;
+            if (ulani_ble_get_active_slot(&active) == ESP_OK && active == cmd->slot) {
+                ESP_LOGI(TAG, "slot %u is on screen; repainting it", cmd->slot);
+                ulani_ble_set_active_slot(cmd->slot);
+            }
         }
         a.last_op_us = esp_timer_get_time();
         break;
@@ -401,6 +451,16 @@ static void handle_cmd(const cmd_t *cmd)
 
     case CMD_TEST_IMAGE: {
         clear_error();
+
+        err = ensure_connected();
+        if (err != ESP_OK) {
+            set_error(err == ESP_ERR_NOT_FOUND
+                          ? "no calendar remembered; connect to one first"
+                          : "could not reach the calendar",
+                      err);
+            break;
+        }
+
         static uint32_t seed;
         ulani_payload_src_t pattern;
         ulani_testpattern_src(&pattern, &seed, cmd->arg);

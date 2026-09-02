@@ -84,7 +84,8 @@ static struct {
     volatile bool     dat_ready;
     volatile uint16_t dat_rsp;
 
-    volatile bool abort_req;
+    volatile bool     abort_req;
+    volatile uint32_t write_stalls;
 
     ulani_device_t seen[SEEN_MAX];
     int            seen_n;
@@ -125,6 +126,7 @@ void ulani_set_state(ulani_state_t st)
 ulani_state_t ulani_ble_state(void) { return s.state; }
 bool     ulani_ble_is_connected(void) { return s.conn_handle != BLE_HS_CONN_HANDLE_NONE; }
 uint16_t ulani_op_handle(void)        { return s.op_val; }
+uint32_t ulani_gatt_write_stalls(void) { return s.write_stalls; }
 uint16_t ulani_dat_handle(void)       { return s.dat_val; }
 
 bool ulani_transfer_abort_requested(void) { return s.abort_req; }
@@ -293,6 +295,7 @@ esp_err_t ulani_gatt_write_data(const void *data, uint16_t len)
             ESP_LOGE(TAG, "data write rc=%d (%s)", rc, ble_hs_err_str(rc));
             return ESP_FAIL;
         }
+        s.write_stalls++;
         vTaskDelay(pdMS_TO_TICKS(10)); /* controller buffers are full */
     }
 

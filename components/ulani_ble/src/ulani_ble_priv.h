@@ -18,6 +18,9 @@ uint16_t ulani_dat_handle(void);
  */
 esp_err_t ulani_gatt_write_data(const void *data, uint16_t len);
 
+/* How many times a data write has had to wait for controller buffers. */
+uint32_t ulani_gatt_write_stalls(void);
+
 /*
  * Sends an op-channel frame and, if wait_rsp, blocks for the matching notify.
  * rsp receives the first two bytes of the reply.
