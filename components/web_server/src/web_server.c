@@ -112,6 +112,13 @@ static esp_err_t get_status(httpd_req_t *req)
     if (st.battery_valid) {
         cJSON_AddNumberToObject(root, "batteryLevel", st.battery_level);
     }
+    /* How stale each reading is. Absent means "never read". */
+    if (st.battery_age_ms != UINT32_MAX) {
+        cJSON_AddNumberToObject(root, "batteryAgeMs", st.battery_age_ms);
+    }
+    if (st.slot_age_ms != UINT32_MAX) {
+        cJSON_AddNumberToObject(root, "slotAgeMs", st.slot_age_ms);
+    }
     cJSON_AddStringToObject(root, "address", st.connected_addr);
     cJSON_AddStringToObject(root, "name", st.connected_name);
     cJSON_AddStringToObject(root, "error", st.last_error);

@@ -53,7 +53,12 @@ static struct {
     ulani_device_t devices[ULANI_APP_MAX_DEVICES];
     size_t         device_n;
 
-    int64_t last_op_us; /* for the idle timeout the device enforces */
+    int64_t  last_op_us; /* for the idle timeout the device enforces */
+    uint32_t keepalive_tick;
+
+    /* When each reading was last answered by the calendar. 0 = never. */
+    int64_t battery_us;
+    int64_t slot_us;
 
     ulani_device_t saved;        /* remembered device, addr empty if none */
     bool           auto_connect; /* armed: keep trying to reach `saved` */
@@ -207,6 +212,53 @@ static void on_ble_event(const ulani_event_t *ev, void *user)
 
 /* ----------------------------------------------------------------- worker */
 
+static esp_err_t read_battery(void)
+{
+    uint16_t  battery = 0;
+    esp_err_t err     = ulani_ble_get_battery(&battery);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    /* The reply is <opcode><level>; the level is the low byte. */
+    uint8_t level = (uint8_t)(battery & 0xff);
+    status_lock();
+    a.status.battery_rsp   = battery;
+    a.status.battery_level = level;
+    a.status.battery_valid = true;
+    a.battery_us           = esp_timer_get_time();
+    status_unlock();
+    return ESP_OK;
+}
+
+/*
+ * Notices a page turn we did not ask for.
+ *
+ * The panel never volunteers anything: across every log we have, each notify
+ * is a reply to an op we sent. So a button press on the device itself is
+ * invisible to us until we go and ask, and our snapshot -- which the UI shows
+ * and which decides whether an upload has to repaint -- quietly goes stale.
+ */
+static esp_err_t read_active_slot(void)
+{
+    uint8_t   slot = 0;
+    esp_err_t err  = ulani_ble_get_active_slot(&slot);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    status_lock();
+    bool changed         = (a.status.active_slot != slot);
+    a.status.active_slot = slot;
+    a.slot_us            = esp_timer_get_time();
+    status_unlock();
+
+    if (changed) {
+        ESP_LOGI(TAG, "active slot is %u (changed on the device)", slot);
+    }
+    return ESP_OK;
+}
+
 /*
  * Reads battery and active slot. Neither is essential, so a failure here does
  * not tear the connection down -- but it does get reported: silently leaving
@@ -214,30 +266,14 @@ static void on_ble_event(const ulani_event_t *ev, void *user)
  */
 static void refresh_device_info(void)
 {
-    uint16_t  battery = 0;
-    esp_err_t bat_err = ulani_ble_get_battery(&battery);
-    if (bat_err == ESP_OK) {
-        /* The reply is <opcode><level>; the level is the low byte. */
-        uint8_t level = (uint8_t)(battery & 0xff);
-        ESP_LOGI(TAG, "battery reply %04x -> level %u", battery, level);
-        status_lock();
-        a.status.battery_rsp   = battery;
-        a.status.battery_level = level;
-        a.status.battery_valid = true;
-        status_unlock();
-    } else {
-        set_error("read battery", bat_err);
+    esp_err_t err = read_battery();
+    if (err != ESP_OK) {
+        set_error("read battery", err);
     }
 
-    uint8_t   slot     = 0;
-    esp_err_t slot_err = ulani_ble_get_active_slot(&slot);
-    if (slot_err == ESP_OK) {
-        ESP_LOGI(TAG, "active slot %u", slot);
-        status_lock();
-        a.status.active_slot = slot;
-        status_unlock();
-    } else {
-        set_error("read active slot", slot_err);
+    err = read_active_slot();
+    if (err != ESP_OK) {
+        set_error("read active slot", err);
     }
 
     a.last_op_us = esp_timer_get_time();
@@ -438,7 +474,23 @@ static void worker_task(void *param)
             ulani_ble_ask_disconnect();
             ulani_ble_disconnect();
         } else {
-            ulani_ble_ack();
+            /*
+             * Alternate what the keepalive asks for, and read the answer.
+             *
+             * binaryAck() sends the same 06 00 frame getBatteryLevel() does --
+             * the only difference is whether anyone waits for the reply, and
+             * we used to throw it away every ten seconds. So both halves of
+             * this refresh a field for free: the traffic that keeps the link
+             * alive is traffic we have to send anyway, which matters with
+             * WiFi and BLE sharing one antenna. Each field lands within two
+             * ticks. A failure is left to the next tick rather than raised --
+             * the age in the status tells the UI when a reading went stale.
+             */
+            if (a.keepalive_tick++ & 1) {
+                read_active_slot();
+            } else {
+                read_battery();
+            }
         }
     }
 }
@@ -481,10 +533,22 @@ esp_err_t ulani_app_start(void)
     return ESP_OK;
 }
 
+/* Age of a reading in ms, or UINT32_MAX if it has never been taken. */
+static uint32_t age_ms(int64_t stamp_us)
+{
+    if (stamp_us == 0) {
+        return UINT32_MAX;
+    }
+    int64_t age = (esp_timer_get_time() - stamp_us) / 1000;
+    return age < 0 ? 0 : (age > UINT32_MAX ? UINT32_MAX : (uint32_t)age);
+}
+
 void ulani_app_get_status(ulani_app_status_t *out)
 {
     status_lock();
     *out = a.status;
+    out->battery_age_ms = age_ms(a.battery_us);
+    out->slot_age_ms    = age_ms(a.slot_us);
     status_unlock();
 }
 

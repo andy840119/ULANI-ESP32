@@ -27,6 +27,15 @@ typedef struct {
     uint16_t      battery_rsp;   /* raw op reply, 0 = unknown */
     bool          battery_valid;
     uint8_t       battery_level; /* low byte of the reply; see protocol.md */
+
+    /*
+     * How long ago each reading actually came off the calendar. The keepalive
+     * alternates between the two, so they age independently, and a field that
+     * has stopped moving is the visible symptom of a link that is up but no
+     * longer answering. UINT32_MAX until the first successful read.
+     */
+    uint32_t      battery_age_ms;
+    uint32_t      slot_age_ms;
     uint16_t      mtu;
 
     bool     transfer_active;

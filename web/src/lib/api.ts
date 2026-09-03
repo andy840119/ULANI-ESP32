@@ -16,6 +16,9 @@ export interface Status {
   batteryRaw: number;
   /* Absent until a reading has been taken. See docs/protocol.md on the scale. */
   batteryLevel?: number;
+  /* How long ago each reading came off the calendar. Absent means never. */
+  batteryAgeMs?: number;
+  slotAgeMs?: number;
   address: string;
   name: string;
   error: string;
