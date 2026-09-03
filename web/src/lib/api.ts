@@ -81,8 +81,8 @@ export const api = {
   forgetDevice: () => post('/api/forget-device'),
   refresh: () => post('/api/refresh'),
   setSlot: (slot: number) => post('/api/slot', { slot }),
-  testImage: (slot: number, seed?: number) =>
-    post('/api/test-image', { slot, seed: seed ?? 0 }),
+  testImage: (slot: number, seed?: number, activate = false) =>
+    post('/api/test-image', { slot, seed: seed ?? 0, activate }),
 
   wifi: () => request<WifiStatus>('/api/wifi'),
   wifiScan: () => post('/api/wifi/scan'),

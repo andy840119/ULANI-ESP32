@@ -91,6 +91,15 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <div class="slots" id="send-buttons">
         ${[1, 2, 3, 4].map((n) => `<button data-send="${n}">${n}</button>`).join('')}
       </div>
+      <label class="toggle">
+        <input type="checkbox" id="send-activate">
+        <span>傳完後切到那一張</span>
+      </label>
+      <p class="hint">
+        上傳歸上傳，切換頁面歸切換頁面：預設只把圖寫進去，畫面留在原本那一張。
+        寫進去的剛好就是正在顯示的那一張時，會自動重繪，否則畫面會停在舊圖。
+        日曆重繪要花大半分鐘，這段期間收不了下一張，所以連續換好幾張時別勾。
+      </p>
       <h3>切換目前顯示的那一張</h3>
       <div class="slots" id="slot-buttons">
         ${[1, 2, 3, 4].map((n) => `<button data-slot="${n}">${n}</button>`).join('')}
@@ -317,7 +326,8 @@ $('#send-buttons').addEventListener('click', (ev) => {
   const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>('button[data-send]');
   if (!btn) return;
   const slot = Number(btn.dataset.send);
-  guard(() => api.testImage(slot, Math.floor(Math.random() * 0xffffff) + 1));
+  const activate = $<HTMLInputElement>('#send-activate').checked;
+  guard(() => api.testImage(slot, Math.floor(Math.random() * 0xffffff) + 1, activate));
 });
 
 $('#device-list').addEventListener('click', (ev) => {

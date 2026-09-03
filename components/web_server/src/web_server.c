@@ -235,11 +235,15 @@ static esp_err_t post_test(httpd_req_t *req)
     }
     cJSON *slot = cJSON_GetObjectItem(body, "slot");
     cJSON *seed = cJSON_GetObjectItem(body, "seed");
+    cJSON *act  = cJSON_GetObjectItem(body, "activate");
     uint8_t  s = cJSON_IsNumber(slot) ? (uint8_t)slot->valuedouble : 1;
     uint32_t d = cJSON_IsNumber(seed) ? (uint32_t)seed->valuedouble : 0;
+    /* Uploading does not move the display unless asked. Writing over the page
+     * currently on screen repaints anyway; see ulani_app_cmd_test_image. */
+    bool a = cJSON_IsBool(act) ? cJSON_IsTrue(act) : false;
     cJSON_Delete(body);
 
-    esp_err_t err = ulani_app_cmd_test_image(s, d);
+    esp_err_t err = ulani_app_cmd_test_image(s, d, a);
     if (err == ESP_ERR_INVALID_ARG) {
         return send_err(req, "400 Bad Request", "slot must be 1..4");
     }

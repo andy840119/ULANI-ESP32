@@ -66,8 +66,15 @@ esp_err_t ulani_app_cmd_forget_device(void);
 /*
  * Phase 1 self-test: generates a 192000-byte pattern on the fly from seed and
  * streams it to the given slot. No filesystem involved.
+ *
+ * activate switches the panel to that slot once the image lands. Uploading and
+ * switching are separate operations on the wire, so passing false leaves the
+ * display where it is -- which also skips the repaint the panel would
+ * otherwise spend the next half minute on. Writing over the page currently on
+ * screen repaints regardless, or the panel would keep showing an image that
+ * slot no longer holds.
  */
-esp_err_t ulani_app_cmd_test_image(uint8_t slot, uint32_t seed);
+esp_err_t ulani_app_cmd_test_image(uint8_t slot, uint32_t seed, bool activate);
 
 /* Payload source producing the same generated pattern. */
 void ulani_testpattern_src(ulani_payload_src_t *src, uint32_t *seed_storage, uint32_t seed);

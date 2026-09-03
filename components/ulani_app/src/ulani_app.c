@@ -41,6 +41,7 @@ typedef struct {
     uint32_t arg;
     char     addr[18];
     uint8_t  slot;
+    bool     activate;
 } cmd_t;
 
 static struct {
@@ -337,13 +338,37 @@ static void handle_cmd(const cmd_t *cmd)
             src = pattern;
         }
 
-        ESP_LOGI(TAG, "sending test pattern to slot %u (seed %u)",
-                 cmd->slot, (unsigned)cmd->arg);
+        ESP_LOGI(TAG, "sending test pattern to slot %u (seed %u, %s)",
+                 cmd->slot, (unsigned)cmd->arg,
+                 cmd->activate ? "activating" : "leaving the display alone");
         err = ulani_ble_send_image(cmd->slot, &src);
         if (err != ESP_OK) {
             set_error("send image", err);
-        } else {
-            /* Make the result visible immediately, like helloworld.js does. */
+            a.last_op_us = esp_timer_get_time();
+            break;
+        }
+
+        /*
+         * Uploading and switching are separate operations on the wire, so an
+         * upload leaves the display where it is. The one case that has to
+         * ignore that is writing over the page currently on screen: the panel
+         * would go on showing an image that slot no longer holds, so re-select
+         * it to force a repaint. Ask the panel which page it is on rather than
+         * trusting our snapshot, which goes stale the moment someone presses
+         * the button on the device itself.
+         */
+        bool refresh = cmd->activate;
+        if (!refresh) {
+            uint8_t active = 0;
+            if (ulani_ble_get_active_slot(&active) == ESP_OK) {
+                refresh = (active == cmd->slot);
+                if (refresh) {
+                    ESP_LOGI(TAG, "slot %u is on screen; repainting it",
+                             cmd->slot);
+                }
+            }
+        }
+        if (refresh) {
             ulani_ble_set_active_slot(cmd->slot);
         }
         a.last_op_us = esp_timer_get_time();
@@ -517,12 +542,12 @@ esp_err_t ulani_app_cmd_forget_device(void)
     return post(&cmd);
 }
 
-esp_err_t ulani_app_cmd_test_image(uint8_t slot, uint32_t seed)
+esp_err_t ulani_app_cmd_test_image(uint8_t slot, uint32_t seed, bool activate)
 {
     if (slot < ULANI_SLOT_MIN || slot > ULANI_SLOT_MAX) {
         return ESP_ERR_INVALID_ARG;
     }
     cmd_t cmd = { .id = CMD_TEST_IMAGE, .slot = slot,
-                  .arg = seed ? seed : esp_random() };
+                  .arg = seed ? seed : esp_random(), .activate = activate };
     return post(&cmd);
 }
