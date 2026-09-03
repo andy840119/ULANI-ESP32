@@ -72,6 +72,29 @@ esp_err_t ulani_app_cmd_test_image(uint8_t slot, uint32_t seed);
 /* Payload source producing the same generated pattern. */
 void ulani_testpattern_src(ulani_payload_src_t *src, uint32_t *seed_storage, uint32_t seed);
 
+/*
+ * Page-number badge: a black right triangle in the bottom-right corner, about
+ * 2 cm wide, with the page number in white inside it. Pages 1..4 only.
+ */
+typedef struct {
+    ulani_payload_src_t inner;
+    uint8_t             page;
+} ulani_page_badge_t;
+
+/*
+ * Wraps inner so every byte it hands out has the badge stamped on it. storage
+ * must outlive the transfer. Returns ESP_ERR_INVALID_ARG for a page outside
+ * 1..4.
+ */
+esp_err_t ulani_page_badge_src(ulani_payload_src_t *src, ulani_page_badge_t *storage,
+                               const ulani_payload_src_t *inner, uint8_t page);
+
+/*
+ * True when (x, y) falls inside the badge, with the palette index to draw.
+ * Exposed for tools/tests that want to check the shape without a transfer.
+ */
+bool ulani_page_badge_pixel(uint8_t page, uint32_t x, uint32_t y, uint8_t *index);
+
 #ifdef __cplusplus
 }
 #endif

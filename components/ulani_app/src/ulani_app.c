@@ -326,8 +326,16 @@ static void handle_cmd(const cmd_t *cmd)
     case CMD_TEST_IMAGE: {
         clear_error();
         static uint32_t seed;
-        ulani_payload_src_t src;
-        ulani_testpattern_src(&src, &seed, cmd->arg);
+        ulani_payload_src_t pattern;
+        ulani_testpattern_src(&pattern, &seed, cmd->arg);
+
+        /* Stamp the slot number on it so a photo of the panel is enough to
+         * tell which page you are looking at. */
+        static ulani_page_badge_t badge;
+        ulani_payload_src_t       src;
+        if (ulani_page_badge_src(&src, &badge, &pattern, cmd->slot) != ESP_OK) {
+            src = pattern;
+        }
 
         ESP_LOGI(TAG, "sending test pattern to slot %u (seed %u)",
                  cmd->slot, (unsigned)cmd->arg);

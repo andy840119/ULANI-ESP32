@@ -30,6 +30,16 @@ static const char *TAG = "ulani_xfer";
 /* Comfortably inside the ten seconds of silence the panel tolerates. */
 #define ACK_EVERY_US (8 * 1000 * 1000)
 
+/*
+ * The panel repaints its e-paper after an image lands and ignores a new send
+ * request for the best part of a minute while it does -- op 0x01 simply never
+ * gets an answer. Pressing the button a second time is what makes it work, so
+ * do that here instead of handing the user an error. Four tries at a ten-second
+ * op timeout plus these gaps covers roughly 50 s of a busy panel.
+ */
+#define SEND_HEADER_ATTEMPTS 4
+#define SEND_RETRY_DELAY_MS  3000
+
 #define ULANI_RSP_SEND_ACCEPTED 0x0100
 #define ULANI_RSP_IMAGE_OK      0x0200
 
@@ -97,16 +107,36 @@ esp_err_t ulani_ble_send_image(uint8_t slot, const ulani_payload_src_t *src)
     ulani_data_result_arm();
 
     uint16_t rsp = 0;
-    err = ulani_op_exec(header, (uint16_t)hlen, true, &rsp);
-    if (err != ESP_OK) {
-        return err;
-    }
-    if (rsp != ULANI_RSP_SEND_ACCEPTED) {
-        ESP_LOGW(TAG, "device refused the transfer, rsp=%04x", rsp);
-        ulani_event_t ev = { .type = ULANI_EV_TRANSFER_DONE,
-                             .transfer_done = { .ok = false, .rsp = rsp, .slot = slot } };
-        ulani_emit(&ev);
-        return ESP_FAIL;
+    for (int attempt = 1;; attempt++) {
+        err = ulani_op_exec(header, (uint16_t)hlen, true, &rsp);
+
+        /* Anything but silence or a refusal is a real error; don't paper over it. */
+        if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
+            return err;
+        }
+        if (err == ESP_OK && rsp == ULANI_RSP_SEND_ACCEPTED) {
+            break;
+        }
+
+        if (attempt >= SEND_HEADER_ATTEMPTS || ulani_transfer_abort_requested() ||
+            !ulani_ble_is_connected()) {
+            if (err == ESP_ERR_TIMEOUT) {
+                ESP_LOGE(TAG, "device never answered the send request (%d attempts)",
+                         attempt);
+            } else {
+                ESP_LOGW(TAG, "device refused the transfer, rsp=%04x", rsp);
+            }
+            ulani_data_result_wait(0, NULL); /* disarm */
+            ulani_event_t ev = { .type = ULANI_EV_TRANSFER_DONE,
+                                 .transfer_done = { .ok = false, .rsp = rsp, .slot = slot } };
+            ulani_emit(&ev);
+            return err != ESP_OK ? err : ESP_FAIL;
+        }
+
+        ESP_LOGW(TAG, "send request attempt %d got %s (rsp=%04x); the panel is "
+                      "probably still repainting, retrying",
+                 attempt, esp_err_to_name(err), rsp);
+        vTaskDelay(pdMS_TO_TICKS(SEND_RETRY_DELAY_MS));
     }
 
     ulani_set_state(ULANI_STATE_TRANSFERRING);
