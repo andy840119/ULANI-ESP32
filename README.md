@@ -95,7 +95,9 @@ web/                前端（獨立 npm 專案，不受 idf.py 管）
 tools/
   build_web.py      前端 build → gzip → 韌體
   verify_payload.*  拿 C 實作跟照抄 JS 語意的 reference 對答案
-docs/protocol.md    逆推出來的協定筆記，含刻意保留的怪癖
+docs/
+  protocol.md       逆推出來的協定筆記，含刻意保留的怪癖
+  background.md     為什麼有這個專案、連線策略還沒定案的部分
 ```
 
 分層原則：協定層不知道有網頁，網頁層不知道有 opcode。
@@ -132,6 +134,9 @@ docs/protocol.md    逆推出來的協定筆記，含刻意保留的怪癖
   `CONFIG_ULANI_BLE_CHUNK_GAP_MS` 可以調慢傳輸來換穩定度。
 - **AP/STA 同頻道**：見上方說明。掃描 WiFi 時也會短暫佔用無線電，所以介面不會
   自動輪詢掃描，要按按鈕才掃。
+
+專案的由來、官方 App 與 PC driver 的歷史、以及連線策略的取捨記在
+[docs/background.md](docs/background.md)。
 
 ## 授權與致謝
 
