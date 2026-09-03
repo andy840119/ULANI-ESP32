@@ -26,6 +26,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="row"><span>裝置</span><strong id="s-device">未連線</strong></div>
     <div class="row"><span>目前相框</span><strong id="s-slot">—</strong></div>
     <div class="row"><span>電量</span><strong id="s-battery">—</strong></div>
+    <div class="row"><span>日曆資料更新於</span><strong id="s-age">—</strong></div>
     <div class="meter" id="s-battery-meter" hidden>
       <div class="bar"><div class="fill" id="s-battery-fill"></div></div>
     </div>
@@ -246,6 +247,25 @@ function renderDevices(devices: Status['devices'], scanning: boolean) {
  * next to the percentage -- if the assumption is wrong it is visible at a
  * glance rather than quietly misleading.
  */
+/*
+ * The calendar never tells us anything on its own, so every number on screen is
+ * as old as the last time the firmware asked. Showing that age turns "the
+ * battery says 5%" into "the battery said 5%, twelve seconds ago", and makes a
+ * link that is up but no longer answering visible instead of silent.
+ */
+function ago(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} 秒前`;
+  const m = Math.round(s / 60);
+  return m < 60 ? `${m} 分鐘前` : `${Math.round(m / 60)} 小時前`;
+}
+
+function renderAge(st: Status) {
+  const ages = [st.batteryAgeMs, st.slotAgeMs].filter(
+    (v): v is number => v !== undefined);
+  $('#s-age').textContent = ages.length ? ago(Math.max(...ages)) : '—';
+}
+
 function renderBattery(st: Status) {
   const meter = $<HTMLDivElement>('#s-battery-meter');
 
@@ -271,6 +291,7 @@ function renderStatus(st: Status) {
     : '未連線';
   $('#s-slot').textContent = st.activeSlot ? String(st.activeSlot) : '—';
   renderBattery(st);
+  renderAge(st);
 
   if (!busy) showError(st.error);
 
