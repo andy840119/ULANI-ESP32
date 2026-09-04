@@ -475,7 +475,7 @@ async function poll() {
   try {
     renderStatus(await api.status());
     renderWifi(await api.wifi());
-    renderTesserae(await api.tesserae());
+    renderTesserae((await api.tesserae()).clients);
   } catch {
     $('#s-state').textContent = '無法連上 ESP32';
   }

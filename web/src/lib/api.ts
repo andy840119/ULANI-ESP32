@@ -57,15 +57,18 @@ export interface WifiStatus {
 
 export type TesseraeState = 'disabled' | 'unregistered' | 'idle' | 'working' | 'error';
 
-export interface TesseraeStatus {
+export interface TesseraeClient {
+  slot: number;
   state: TesseraeState;
   serverUrl: string;
   deviceId: string;
   registered: boolean;
-  slot: number;
   nextPollS: number;
   secondsUntilPoll: number;
-  lastFrameAt: number;
+  /* Unix seconds of the last stored frame, from the server's clock. 0 = none. */
+  lastFrameEpoch: number;
+  /* A frame is stored for this slot and can be previewed. */
+  hasFrame: boolean;
   error: string;
 }
 
@@ -101,16 +104,24 @@ export const api = {
   testImage: (slot: number, seed?: number, activate = false) =>
     post('/api/test-image', { slot, seed: seed ?? 0, activate }),
 
-  tesserae: () => request<TesseraeStatus>('/api/tesserae'),
+  tesserae: () => request<{ clients: TesseraeClient[] }>('/api/tesserae'),
   tesseraeConnect: (opts: {
+    slot: number;
     serverUrl: string;
     pairingCode: string;
     deviceId: string;
     token: string;
-    slot: number;
   }) => post('/api/tesserae/connect', opts),
-  tesseraePoll: () => post('/api/tesserae/poll'),
-  tesseraeForget: () => post('/api/tesserae/forget'),
+  tesseraePoll: (slot: number) => post('/api/tesserae/poll', { slot }),
+  tesseraeForget: (slot: number) => post('/api/tesserae/forget', { slot }),
+
+  async slotImage(slot: number): Promise<Uint8Array> {
+    const res = await fetch(`/api/slot/download?slot=${slot}`);
+    if (!res.ok) {
+      throw new ApiError(`${res.status} ${res.statusText}`);
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  },
 
   wifi: () => request<WifiStatus>('/api/wifi'),
   wifiScan: () => post('/api/wifi/scan'),
