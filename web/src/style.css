@@ -471,3 +471,32 @@ button.tc-toggle h3 {
   font-size: 0.9rem;
   color: var(--muted);
 }
+
+/* A row whose progress/level shows as a fill behind its text, so nothing
+   pops in below it and shifts the layout (issues #24). */
+.meter-row {
+  position: relative;
+  overflow: hidden;
+}
+
+.meter-row > span,
+.meter-row > strong {
+  position: relative;
+  z-index: 1;
+}
+
+.rowfill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  z-index: 0;
+  background: var(--accent);
+  opacity: 0.2;
+  transition: width 0.3s;
+}
+
+.meter-row.low .rowfill {
+  background: var(--danger);
+}
