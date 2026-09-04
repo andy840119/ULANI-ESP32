@@ -52,8 +52,21 @@ merged 檔一個就包含 bootloader、分割表與韌體，直接燒在位置 `
 
 - **Connect 後看不到序列埠 / 一直連不上**：多數 C3 開發板用內建 USB-JTAG，接上
   就會出現；若你的板子是走 USB-UART 晶片（CH340、CP2102 等），要先裝對應驅動。
-- **選了埠卻連線失敗**：按住板子的 **BOOT** 鍵再插 USB（或再按一下 **RESET**）
-  讓它進下載模式，然後再 Connect。
+- **選了裝置後出現 `Couldn't sync to ESP. Try resetting.`（或連上卻同步失敗）**：
+  最常見的情況。網頁工具連到序列埠了，但板子還在跑你的韌體、沒進「下載模式」，
+  所以摸不到 ROM bootloader。C3 super-mini 走晶片內建的 USB（USB-Serial-JTAG），
+  `idf.py` 會自動重置進下載模式，但瀏覽器（esptool-js）常常沒辦法，所以要手動進：
+  1. 按住 **BOOT** 鍵（GPIO9）不放。
+  2. 維持按著 BOOT，**按一下 RESET**（或分不清哪顆、只有一顆鍵時：按著 BOOT
+     不放，直接**拔掉再插上 USB**）。
+  3. 放開 BOOT。
+  4. 回到網頁按 **Connect**。板子可能會重新列舉，跳出選單就**重新選一次那個埠**。
+  5. 這時它停在 ROM bootloader（不會跑 app），加上 merged 檔燒 `0x0`、按 Program
+     就會過了。
+  6. 燒完按一下 **RESET**（或重插 USB）離開下載模式，新韌體才會開始跑。
+- **一直連不上、Connect 沒反應**：確認沒有別的程式占著同一個埠——Arduino IDE /
+  PlatformIO 的序列埠監控、另一個開著同一工具的分頁、或 `idf.py monitor` 都會搶
+  埠，一次只能有一個程式用。關掉後拔插一次 USB 再試。
 - **Program 中途失敗**：換一條「可傳資料」的 USB 線（有些線只有供電），或降低
   工具裡的 baud rate 再試。
 - **瀏覽器沒有 Connect 按鈕 / 提示不支援**：改用桌機版 Chrome 或 Edge，Web Serial
