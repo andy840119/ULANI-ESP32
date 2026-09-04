@@ -30,6 +30,12 @@ idf.py -p COM<n> flash monitor
 
 改前端後重跑 `tools/build_web.py` 再 `idf.py build` 即可。
 
+## 安裝（不編譯）
+
+只是想燒錄、不想裝 esp-idf，可以用桌機版 Chrome / Edge 從瀏覽器刷機：到
+[Releases](https://github.com/andy840119/ULANI-ESP32/releases) 抓
+`ulani-esp32-merged.bin`，照 [docs/flashing.md](docs/flashing.md) 的步驟走即可。
+
 ## 使用
 
 1. 開機後 ESP32 會開一個名為 `ULANI-Setup-XXXX` 的開放熱點（XXXX 是 MAC 末四碼）

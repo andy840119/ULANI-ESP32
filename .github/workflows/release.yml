@@ -1,0 +1,68 @@
+# Builds the firmware and attaches the flashable binaries to a GitHub Release.
+#
+# There is no over-the-air update (see issue #22): the ESP32-C3 is flashed over
+# USB from the browser with a web esptool. All this has to do is make the exact
+# binaries for a version downloadable, so the flashing guide in docs/flashing.md
+# has something to point at.
+#
+# Runs on a version tag (v*). The web UI is built on the runner first -- the
+# firmware embeds it, and the ESP-IDF container has no Node -- then the IDF
+# build runs in the container and picks up the staged assets.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # lets you build binaries off a branch without tagging
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload assets to it
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Vite build + gzip into components/web_server/www, where CMake embeds it.
+      - name: Build and stage the web UI
+        run: python3 tools/build_web.py
+
+      # merge-bin folds bootloader + partition table + app into one image that
+      # flashes at offset 0 -- the single file the web flasher asks the user for.
+      - name: Build firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5
+          target: esp32c3
+          command: idf.py build && idf.py merge-bin -o ulani-esp32-merged.bin
+
+      - name: Collect the flashable binaries
+        run: |
+          mkdir -p dist
+          cp build/ulani-esp32-merged.bin              dist/
+          cp build/ulani_esp32.bin                     dist/
+          cp build/bootloader/bootloader.bin           dist/
+          cp build/partition_table/partition-table.bin dist/
+          cp build/flasher_args.json                   dist/
+          ls -l dist
+
+      # Always available from the run page, even for an untagged manual build.
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ulani-esp32-firmware
+          path: dist/*
+
+      - name: Publish to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
