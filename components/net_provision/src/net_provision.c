@@ -323,14 +323,35 @@ esp_err_t net_provision_start_ap(const net_ap_cfg_t *cfg)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     /*
-     * BLE and WiFi share one antenna on the C3. Keeping the radio awake costs
-     * power but stops the scheduler from starving image transfers.
+     * BLE and WiFi share one antenna on the C3, and an image transfer is the
+     * one thing that cannot tolerate the radio dozing mid-stream -- so we go
+     * to full power only for the duration of a transfer (net_power_boost) and
+     * modem-sleep the rest of the time. WIFI_PS_NONE ran the receive chain at
+     * full power around the clock, which is why the board sat there warm even
+     * doing nothing (issue #23).
      */
-    esp_wifi_set_ps(WIFI_PS_NONE);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 
     ESP_LOGI(TAG, "AP up: ssid=%s auth=%s", cfg->ssid,
              wc.ap.authmode == WIFI_AUTH_OPEN ? "open" : "wpa2");
     return ESP_OK;
+}
+
+void net_power_boost(bool on)
+{
+    /*
+     * Hold the radio fully awake for a BLE image transfer and let it
+     * modem-sleep again afterwards. WiFi and BLE share one antenna on the C3;
+     * letting WiFi doze between beacons mid-transfer starves the 835-packet
+     * stream (the reason this setting was WIFI_PS_NONE to begin with). Every
+     * other time -- serving the UI, a Tesserae fetch, the keepalive -- the
+     * traffic wakes the radio on its own and modem sleep costs nothing.
+     */
+    esp_err_t err = esp_wifi_set_ps(on ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "wifi power %s failed: %s",
+                 on ? "boost" : "relax", esp_err_to_name(err));
+    }
 }
 
 static esp_err_t apply_sta_config(const char *ssid, const char *pass)

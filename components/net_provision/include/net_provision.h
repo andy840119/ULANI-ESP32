@@ -88,6 +88,17 @@ esp_err_t net_wifi_scan_start(void);
 bool      net_wifi_scan_busy(void);
 size_t    net_wifi_scan_results(net_scan_result_t *out, size_t max);
 
+/* ------------------------------------------------------------------ power */
+
+/*
+ * Full radio power (on = true) for the length of a BLE image transfer, then
+ * back to modem sleep (on = false). WiFi and BLE share one antenna, so a
+ * transfer needs the radio awake or it starves; everything else runs fine on
+ * modem sleep, which is what keeps an idle board from running warm (issue #23).
+ * Safe to call from any task once the AP has started.
+ */
+void net_power_boost(bool on);
+
 #ifdef __cplusplus
 }
 #endif
