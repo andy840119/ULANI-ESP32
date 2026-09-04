@@ -279,6 +279,7 @@ static void add_tesserae_client(cJSON *arr, uint8_t slot)
     cJSON_AddNumberToObject(o, "lastFrameEpoch", st.last_frame_epoch);
     cJSON_AddNumberToObject(o, "lastSentEpoch", st.last_sent_epoch);
     cJSON_AddBoolToObject(o, "hasFrame", st.has_frame);
+    cJSON_AddBoolToObject(o, "badge", ulani_app_get_slot_badge(slot));
     cJSON_AddStringToObject(o, "error", st.last_error);
     cJSON_AddItemToArray(arr, o);
 }
@@ -369,6 +370,24 @@ static esp_err_t post_tesserae_poll(httpd_req_t *req)
 }
 
 /* Sends the image already stored for a slot to the calendar over BLE. */
+static esp_err_t post_slot_badge(httpd_req_t *req)
+{
+    cJSON *body = read_json_body(req);
+    if (!body) {
+        return send_err(req, "400 Bad Request", "invalid json");
+    }
+    cJSON *slot = cJSON_GetObjectItem(body, "slot");
+    cJSON *on   = cJSON_GetObjectItem(body, "on");
+    uint8_t n = cJSON_IsNumber(slot) ? (uint8_t)slot->valuedouble : 0;
+    if (n < ULANI_SLOT_MIN || n > ULANI_SLOT_MAX) {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "slot must be 1..4");
+    }
+    ulani_app_set_slot_badge(n, cJSON_IsTrue(on));
+    cJSON_Delete(body);
+    return send_ok(req);
+}
+
 static esp_err_t post_slot_send(httpd_req_t *req)
 {
     uint8_t slot = body_slot(req);
@@ -538,7 +557,7 @@ static esp_err_t redirect_to_root(httpd_req_t *req, httpd_err_code_t err)
 esp_err_t web_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 31;
+    cfg.max_uri_handlers = 32;
     cfg.lru_purge_enable = true;
     cfg.stack_size       = 6144;
     /*
@@ -574,6 +593,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/tesserae/poll",    .method = HTTP_POST, .handler = post_tesserae_poll },
         { .uri = "/api/slot/download", .method = HTTP_GET,  .handler = get_slot_download },
         { .uri = "/api/slot/send",     .method = HTTP_POST, .handler = post_slot_send },
+        { .uri = "/api/slot/badge",    .method = HTTP_POST, .handler = post_slot_badge },
         { .uri = "/api/wifi",          .method = HTTP_GET,  .handler = get_wifi },
         { .uri = "/api/wifi/scan",     .method = HTTP_POST, .handler = post_wifi_scan },
         { .uri = "/api/wifi/connect",  .method = HTTP_POST, .handler = post_wifi_connect },

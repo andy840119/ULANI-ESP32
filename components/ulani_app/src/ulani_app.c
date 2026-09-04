@@ -18,6 +18,7 @@ static const char *TAG = "ulani_app";
 #define NVS_KEY_ADDR  "addr"
 #define NVS_KEY_NAME  "name"
 #define NVS_KEY_TYPE  "type"
+#define NVS_KEY_BADGE "badge"
 
 /*
  * How long to wait before trying the remembered device again. Long enough that
@@ -67,6 +68,9 @@ static struct {
     int64_t        next_auto_us;
 
     void (*slot_sent_cb)(uint8_t slot, bool ok);
+
+    /* Bit i set => stamp the page badge on slot i+1 before sending it. */
+    uint8_t badge_mask;
 } a;
 
 static void status_lock(void)   { xSemaphoreTake(a.lock, portMAX_DELAY); }
@@ -109,7 +113,18 @@ static void saved_load(void)
         }
         ESP_LOGI(TAG, "remembered device %s (%s)", a.saved.addr, a.saved.name);
     }
+    nvs_get_u8(h, NVS_KEY_BADGE, &a.badge_mask);
     nvs_close(h);
+}
+
+static void badge_store(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, NVS_KEY_BADGE, a.badge_mask);
+        nvs_commit(h);
+        nvs_close(h);
+    }
 }
 
 static void saved_store(const ulani_device_t *dev)
@@ -428,8 +443,16 @@ static void handle_cmd(const cmd_t *cmd)
             break;
         }
 
-        ESP_LOGI(TAG, "sending stored image to slot %u", cmd->slot);
-        err = ulani_ble_send_image(cmd->slot, &src);
+        /* Optionally stamp the page number in the corner (issue #25). */
+        ulani_payload_src_t   out = src;
+        ulani_page_badge_t    badge;
+        if (a.badge_mask & (1u << (cmd->slot - 1))) {
+            ulani_page_badge_src(&out, &badge, &src, cmd->slot);
+        }
+
+        ESP_LOGI(TAG, "sending stored image to slot %u%s", cmd->slot,
+                 (out.read != src.read) ? " (badged)" : "");
+        err = ulani_ble_send_image(cmd->slot, &out);
         ulani_store_reader_close(&reader);
 
         if (err != ESP_OK) {
@@ -604,6 +627,24 @@ static void worker_task(void *param)
 void ulani_app_set_slot_sent_cb(void (*cb)(uint8_t slot, bool ok))
 {
     a.slot_sent_cb = cb;
+}
+
+void ulani_app_set_slot_badge(uint8_t slot, bool on)
+{
+    if (slot < ULANI_SLOT_MIN || slot > ULANI_SLOT_MAX) {
+        return;
+    }
+    uint8_t bit = 1u << (slot - 1);
+    a.badge_mask = on ? (a.badge_mask | bit) : (a.badge_mask & (uint8_t)~bit);
+    badge_store();
+}
+
+bool ulani_app_get_slot_badge(uint8_t slot)
+{
+    if (slot < ULANI_SLOT_MIN || slot > ULANI_SLOT_MAX) {
+        return false;
+    }
+    return (a.badge_mask & (1u << (slot - 1))) != 0;
 }
 
 esp_err_t ulani_app_start(void)
