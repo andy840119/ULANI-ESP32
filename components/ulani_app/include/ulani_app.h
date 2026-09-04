@@ -13,6 +13,7 @@
 
 #include "esp_err.h"
 #include "ulani_ble.h"
+#include "ulani_store.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,9 +56,19 @@ typedef struct {
     char saved_addr[18];
     char saved_name[32];
     bool auto_connect;
+
+    /* What is stored for each slot, indexed 0..3 for slots 1..4. */
+    ulani_slot_info_t slots[ULANI_SLOT_MAX];
 } ulani_app_status_t;
 
 esp_err_t ulani_app_start(void);
+
+/*
+ * Notified after a stored-slot send finishes, with whether it reached the
+ * calendar. Lets a higher layer stamp "last sent" on a real BLE success
+ * rather than on the moment the send was queued. Runs on the app task.
+ */
+void ulani_app_set_slot_sent_cb(void (*cb)(uint8_t slot, bool ok));
 
 void ulani_app_get_status(ulani_app_status_t *out);
 size_t ulani_app_get_devices(ulani_device_t *out, size_t max);
@@ -84,6 +95,15 @@ esp_err_t ulani_app_cmd_forget_device(void);
  * slot no longer holds.
  */
 esp_err_t ulani_app_cmd_test_image(uint8_t slot, uint32_t seed, bool activate);
+
+/* Streams the image stored for `slot` to the calendar. */
+esp_err_t ulani_app_cmd_send_slot(uint8_t slot);
+
+/*
+ * Re-reads what is on disk. Call after an upload or a delete; the status
+ * snapshot is a cache so that polling does not stat the filesystem.
+ */
+void ulani_app_slots_changed(void);
 
 /* Payload source producing the same generated pattern. */
 void ulani_testpattern_src(ulani_payload_src_t *src, uint32_t *seed_storage, uint32_t seed);

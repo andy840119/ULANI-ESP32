@@ -50,9 +50,19 @@ static uint64_t now_ms(void)
     return (uint64_t)tv.tv_sec * 1000ULL + (uint64_t)(tv.tv_usec / 1000);
 }
 
+/*
+ * Read ahead in blocks rather than a packet at a time. A slot lives in SPIFFS,
+ * which reads at roughly 17 KB/s here -- about 13 ms for one 230-byte packet,
+ * the same order as the gap between packets. Doing that inside the send loop
+ * puts a flash operation between every write, which is both slow and jittery
+ * at exactly the point where the panel is timing us.
+ */
+#define READ_AHEAD_PACKETS 20
+#define READ_AHEAD_BYTES   (READ_AHEAD_PACKETS * ULANI_CHUNK_BYTES)
+
 static esp_err_t compute_crc(const ulani_payload_src_t *src, uint16_t *out)
 {
-    static uint8_t buf[512];
+    static uint8_t buf[READ_AHEAD_BYTES];
     ulani_crc16_ctx_t ctx;
     ulani_crc16_init(&ctx);
 
@@ -141,9 +151,12 @@ esp_err_t ulani_ble_send_image(uint8_t slot, const ulani_payload_src_t *src)
 
     ulani_set_state(ULANI_STATE_TRANSFERRING);
 
-    static uint8_t chunk[ULANI_CHUNK_BYTES];
-    size_t   off   = 0;
-    uint32_t index = 0;
+    static uint8_t block[READ_AHEAD_BYTES];
+    size_t   block_base = 0;   /* payload offset the block starts at */
+    size_t   block_len  = 0;
+    size_t   off        = 0;
+    uint32_t index      = 0;
+    uint32_t stalls     = 0;   /* times the controller had no buffer */
     int64_t  last_ack_us = esp_timer_get_time();
 
     while (off < ULANI_PAYLOAD_BYTES) {
@@ -152,22 +165,31 @@ esp_err_t ulani_ble_send_image(uint8_t slot, const ulani_payload_src_t *src)
             break;
         }
 
+        if (off >= block_base + block_len) {
+            block_base = off;
+            block_len  = ULANI_PAYLOAD_BYTES - off;
+            if (block_len > sizeof(block)) {
+                block_len = sizeof(block);
+            }
+            err = src->read(src->ctx, block_base, block, block_len);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "payload read failed at %u", (unsigned)block_base);
+                goto aborted;
+            }
+        }
+
         size_t n = ULANI_PAYLOAD_BYTES - off;
         if (n > ULANI_CHUNK_BYTES) {
             n = ULANI_CHUNK_BYTES;
         }
 
-        err = src->read(src->ctx, off, chunk, n);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "payload read failed at %u", (unsigned)off);
-            goto aborted;
-        }
-
-        err = ulani_gatt_write_data(chunk, (uint16_t)n);
+        uint32_t before = ulani_gatt_write_stalls();
+        err = ulani_gatt_write_data(block + (off - block_base), (uint16_t)n);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "data write failed at packet %u", (unsigned)index);
             goto aborted;
         }
+        stalls += ulani_gatt_write_stalls() - before;
 
         off += n;
         index++;
@@ -208,8 +230,10 @@ esp_err_t ulani_ble_send_image(uint8_t slot, const ulani_payload_src_t *src)
     }
 
     bool ok = (rsp == ULANI_RSP_IMAGE_OK);
-    ESP_LOGI(TAG, "slot %u: transfer %s (rsp=%04x, %u packets)",
-             slot, ok ? "ok" : "failed", rsp, (unsigned)index);
+    ESP_LOGI(TAG, "slot %u: transfer %s (rsp=%04x, %u packets, %u bytes, "
+                  "%u buffer stalls)",
+             slot, ok ? "ok" : "failed", rsp, (unsigned)index, (unsigned)off,
+             (unsigned)stalls);
 
     if (ulani_ble_is_connected()) {
         ulani_set_state(ULANI_STATE_READY);

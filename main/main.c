@@ -13,7 +13,9 @@
 #include "nvs_flash.h"
 
 #include "net_provision.h"
+#include "tesserae.h"
 #include "ulani_app.h"
+#include "ulani_store.h"
 #include "web_server.h"
 
 static const char *TAG = "main";
@@ -26,6 +28,22 @@ static void build_ssid(char *out, size_t len)
     uint8_t mac[6] = { 0 };
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     snprintf(out, len, "ULANI-Setup-%02X%02X", mac[4], mac[5]);
+}
+
+static void on_tesserae_frame(uint8_t slot, void *user)
+{
+    (void)user;
+    ESP_LOGI(TAG, "tesserae stored a new frame for slot %u; sending it", slot);
+    ulani_app_slots_changed();
+    ulani_app_cmd_send_slot(slot);
+}
+
+/* A stored-slot send finished; if it reached the panel, record when. */
+static void on_slot_sent(uint8_t slot, bool ok)
+{
+    if (ok) {
+        tesserae_note_sent(slot);
+    }
 }
 
 void app_main(void)
@@ -52,7 +70,22 @@ void app_main(void)
     /* Joins the user's own network if one has been saved. The AP stays up. */
     ESP_ERROR_CHECK(net_sta_start());
 
+    /* Before the app layer, which reads the slot contents on startup. */
+    ESP_ERROR_CHECK(ulani_store_init());
+
     ESP_ERROR_CHECK(ulani_app_start());
+
+    /*
+     * A frame that has just landed is worth showing straight away; the queue
+     * takes it from here so the tesserae task is not held up by a BLE
+     * transfer that runs for half a minute.
+     */
+    tesserae_cfg_t tess = { .on_frame = on_tesserae_frame };
+    ESP_ERROR_CHECK(tesserae_start(&tess));
+
+    /* Route send completions to the matching Tesserae client's "last sent". */
+    ulani_app_set_slot_sent_cb(on_slot_sent);
+
     ESP_ERROR_CHECK(web_server_start());
 
     ESP_LOGI(TAG, "ready -- join \"%s\" and open http://192.168.4.1/", ssid);

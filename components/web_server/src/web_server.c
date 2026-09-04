@@ -11,6 +11,8 @@
 #include "esp_log.h"
 
 #include "net_provision.h"
+#include "tesserae.h"
+#include "ulani_store.h"
 #include "ulani_app.h"
 #include "web_server.h"
 
@@ -258,6 +260,176 @@ static esp_err_t post_test(httpd_req_t *req)
                          : send_err(req, "503 Service Unavailable", "busy");
 }
 
+/* --------------------------------------------------------------- tesserae */
+
+static void add_tesserae_client(cJSON *arr, uint8_t slot)
+{
+    tesserae_status_t st;
+    tesserae_get_status(slot, &st);
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "slot", slot);
+    cJSON_AddStringToObject(o, "state", tesserae_state_str(st.state));
+    cJSON_AddStringToObject(o, "serverUrl", st.server_url);
+    cJSON_AddStringToObject(o, "deviceId", st.device_id);
+    cJSON_AddBoolToObject(o, "registered", st.registered);
+    cJSON_AddNumberToObject(o, "nextPollS", st.next_poll_s);
+    cJSON_AddNumberToObject(o, "secondsUntilPoll", st.seconds_until_poll);
+    cJSON_AddNumberToObject(o, "lastCheckEpoch", st.last_check_epoch);
+    cJSON_AddNumberToObject(o, "lastFrameEpoch", st.last_frame_epoch);
+    cJSON_AddNumberToObject(o, "lastSentEpoch", st.last_sent_epoch);
+    cJSON_AddBoolToObject(o, "hasFrame", st.has_frame);
+    cJSON_AddStringToObject(o, "error", st.last_error);
+    cJSON_AddItemToArray(arr, o);
+}
+
+static esp_err_t get_tesserae(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr  = cJSON_AddArrayToObject(root, "clients");
+    for (uint8_t slot = ULANI_SLOT_MIN; slot <= ULANI_SLOT_MAX; slot++) {
+        add_tesserae_client(arr, slot);
+    }
+    return send_json(req, root);
+}
+
+static esp_err_t post_tesserae_connect(httpd_req_t *req)
+{
+    cJSON *body = read_json_body(req);
+    if (!body) {
+        return send_err(req, "400 Bad Request", "invalid json");
+    }
+
+    cJSON *slot  = cJSON_GetObjectItem(body, "slot");
+    cJSON *url   = cJSON_GetObjectItem(body, "serverUrl");
+    cJSON *code  = cJSON_GetObjectItem(body, "pairingCode");
+    cJSON *devid = cJSON_GetObjectItem(body, "deviceId");
+    cJSON *token = cJSON_GetObjectItem(body, "token");
+
+    if (!cJSON_IsNumber(slot)) {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "slot required");
+    }
+    if (!cJSON_IsString(url) || url->valuestring[0] == 0) {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "serverUrl required");
+    }
+
+    esp_err_t err = tesserae_configure(
+        (uint8_t)slot->valuedouble,
+        url->valuestring,
+        cJSON_IsString(code)  ? code->valuestring  : "",
+        cJSON_IsString(devid) ? devid->valuestring : "",
+        cJSON_IsString(token) ? token->valuestring : "");
+    cJSON_Delete(body);
+
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_err(req, "400 Bad Request",
+                        "slot must be 1..4; a token also needs its device id, "
+                        "and the fields have length limits");
+    }
+    return err == ESP_OK ? send_ok(req)
+                         : send_err(req, "500 Internal Server Error", "could not save");
+}
+
+/* slot from a {"slot":N} body; 0 if missing or out of range. */
+static uint8_t body_slot(httpd_req_t *req)
+{
+    cJSON *body = read_json_body(req);
+    if (!body) {
+        return 0;
+    }
+    cJSON *slot = cJSON_GetObjectItem(body, "slot");
+    uint8_t n = cJSON_IsNumber(slot) ? (uint8_t)slot->valuedouble : 0;
+    cJSON_Delete(body);
+    return (n >= ULANI_SLOT_MIN && n <= ULANI_SLOT_MAX) ? n : 0;
+}
+
+static esp_err_t post_tesserae_forget(httpd_req_t *req)
+{
+    uint8_t slot = body_slot(req);
+    if (slot == 0) {
+        return send_err(req, "400 Bad Request", "slot must be 1..4");
+    }
+    return tesserae_forget(slot) == ESP_OK
+               ? send_ok(req)
+               : send_err(req, "500 Internal Server Error", "could not erase");
+}
+
+static esp_err_t post_tesserae_poll(httpd_req_t *req)
+{
+    uint8_t slot = body_slot(req);
+    if (slot == 0) {
+        return send_err(req, "400 Bad Request", "slot must be 1..4");
+    }
+    if (tesserae_poll_now(slot) == ESP_ERR_INVALID_STATE) {
+        return send_err(req, "409 Conflict", "no server configured for that slot");
+    }
+    return send_ok(req);
+}
+
+/* Sends the image already stored for a slot to the calendar over BLE. */
+static esp_err_t post_slot_send(httpd_req_t *req)
+{
+    uint8_t slot = body_slot(req);
+    if (slot == 0) {
+        return send_err(req, "400 Bad Request", "slot must be 1..4");
+    }
+    return ulani_app_cmd_send_slot(slot) == ESP_OK
+               ? send_ok(req)
+               : send_err(req, "503 Service Unavailable", "busy");
+}
+
+/*
+ * Streams a stored slot back as raw packed nibbles, so the tab can render a
+ * preview of what a page currently holds -- the only copy of a Tesserae frame
+ * lives here, there is no original to fall back on.
+ */
+static esp_err_t get_slot_download(httpd_req_t *req)
+{
+    char query[32];
+    uint8_t slot = 0;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char value[8];
+        if (httpd_query_key_value(query, "slot", value, sizeof(value)) == ESP_OK) {
+            int n = atoi(value);
+            if (n >= ULANI_SLOT_MIN && n <= ULANI_SLOT_MAX) {
+                slot = (uint8_t)n;
+            }
+        }
+    }
+    if (slot == 0) {
+        return send_err(req, "400 Bad Request", "slot must be 1..4");
+    }
+
+    ulani_store_reader_t reader;
+    ulani_payload_src_t  src;
+    if (ulani_store_payload_src(slot, &reader, &src) != ESP_OK) {
+        return send_err(req, "404 Not Found", "nothing stored for that slot");
+    }
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    static uint8_t buf[2048];
+    esp_err_t err = ESP_OK;
+    for (size_t off = 0; off < ULANI_PAYLOAD_BYTES; ) {
+        size_t n = ULANI_PAYLOAD_BYTES - off;
+        if (n > sizeof(buf)) {
+            n = sizeof(buf);
+        }
+        if (src.read(src.ctx, off, buf, n) != ESP_OK ||
+            httpd_resp_send_chunk(req, (const char *)buf, n) != ESP_OK) {
+            err = ESP_FAIL;
+            break;
+        }
+        off += n;
+    }
+    ulani_store_reader_close(&reader);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return err;
+}
+
 /* -------------------------------------------------------------------- wifi */
 
 static esp_err_t get_wifi(httpd_req_t *req)
@@ -366,7 +538,7 @@ static esp_err_t redirect_to_root(httpd_req_t *req, httpd_err_code_t err)
 esp_err_t web_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 20;
+    cfg.max_uri_handlers = 31;
     cfg.lru_purge_enable = true;
     cfg.stack_size       = 6144;
     /*
@@ -396,6 +568,12 @@ esp_err_t web_server_start(void)
         { .uri = "/api/forget-device", .method = HTTP_POST, .handler = post_forget_device },
         { .uri = "/api/slot",          .method = HTTP_POST, .handler = post_slot },
         { .uri = "/api/test-image",    .method = HTTP_POST, .handler = post_test },
+        { .uri = "/api/tesserae",         .method = HTTP_GET,  .handler = get_tesserae },
+        { .uri = "/api/tesserae/connect", .method = HTTP_POST, .handler = post_tesserae_connect },
+        { .uri = "/api/tesserae/forget",  .method = HTTP_POST, .handler = post_tesserae_forget },
+        { .uri = "/api/tesserae/poll",    .method = HTTP_POST, .handler = post_tesserae_poll },
+        { .uri = "/api/slot/download", .method = HTTP_GET,  .handler = get_slot_download },
+        { .uri = "/api/slot/send",     .method = HTTP_POST, .handler = post_slot_send },
         { .uri = "/api/wifi",          .method = HTTP_GET,  .handler = get_wifi },
         { .uri = "/api/wifi/scan",     .method = HTTP_POST, .handler = post_wifi_scan },
         { .uri = "/api/wifi/connect",  .method = HTTP_POST, .handler = post_wifi_connect },

@@ -100,6 +100,57 @@ Node 版的 `setInterval` 與傳輸並行，韌體這邊是單一 task，所以�
 
 傳輸中途若提早收到 `02xx`，代表裝置放棄了，要停止送資料。
 
+## 與 tesserae 的調色盤對照
+
+[tesserae](https://github.com/dmellok/tesserae) 的 `seeed_ee04_73e6` 裝置格式
+（在它的網頁上顯示為 **Seeed XIAO ePaper EE04 (7.3" Spectra 6)**）和 ULANI 的
+payload 完全同尺寸（800×480、4bpp packed、192000 bytes），但**調色盤索引順序不同**：
+它是六色 Spectra-6，ULANI 是七色 ACeP。
+
+| nibble | tesserae (Spectra-6) | ULANI (ACeP) | 對照 |
+|---|---|---|---|
+| 0 | 黑 | 黑 | 0 → 0 |
+| 1 | 白 | 白 | 1 → 1 |
+| 2 | 黃 | 綠 | 2 → 5 |
+| 3 | 紅 | 藍 | 3 → 4 |
+| 4 | （未使用） | 紅 | 4 → 1 |
+| 5 | 藍 | 黃 | 5 → 3 |
+| 6 | 綠 | 橘 | 6 → 2 |
+
+ULANI 的橘色沒有對應來源，因為 Spectra-6 沒有橘。未使用與超出範圍的值一律轉成白色，
+免得畫面上出現一整塊莫名其妙的顏色。
+
+轉換在下載串流的當下逐位元組完成（`components/tesserae/src/tesserae.c` 的
+`PALETTE_MAP`），不需要額外的緩衝區。
+
+## tesserae 的 /renders/ 授權
+
+`/frame` 回傳的圖片網址長這樣：
+
+```
+http://<server>:8765/renders/<render_id>.bin?sig=<簽章>
+```
+
+`sig` 是 itsdangerous 的限時簽章，payload 就是那個路徑本身。**這個網址不需要
+（也不接受）Authorization header**——參考韌體的 v1 路徑用 `image_fetch()`，
+它傳的 token 是 NULL。只有 `/api/v1/device/<id>/frame/data` 那種 proto2/deck
+路徑才要帶 bearer。
+
+但是簽章驗證預設是關掉的（`app/auth.py`）：
+
+```python
+def _has_valid_render_signature(path):
+    if not path.startswith("/renders/"): return False
+    if not _public_rest_clients_enabled(): return False   # 預設 False
+    return render_signature_valid(...)
+```
+
+關閉時 server 忽略簽章，往下掉到「來源必須是私有網段」的判定。因此透過外網網域
+連線（含同區網的 hairpin NAT）會拿到 403，即使註冊與心跳都正常。
+
+解法是**用區網 IP 當 server 網址**，或在 Settings → Server 打開
+「Allow REST clients on public networks」。
+
 ## 已知怪癖（刻意保留）
 
 **CRC 沒有補零。** `dither.js` 用 `crc.toString(16)` 產生 header 裡的 CRC，

@@ -26,6 +26,7 @@ static const char *TAG = "ulani_app";
  */
 #define AUTO_CONNECT_RETRY_US (30 * 1000 * 1000)
 
+
 typedef enum {
     CMD_SCAN,
     CMD_CONNECT,
@@ -33,6 +34,7 @@ typedef enum {
     CMD_SET_SLOT,
     CMD_REFRESH,
     CMD_TEST_IMAGE,
+    CMD_SEND_SLOT,
     CMD_FORGET_DEVICE,
 } cmd_id_t;
 
@@ -63,6 +65,8 @@ static struct {
     ulani_device_t saved;        /* remembered device, addr empty if none */
     bool           auto_connect; /* armed: keep trying to reach `saved` */
     int64_t        next_auto_us;
+
+    void (*slot_sent_cb)(uint8_t slot, bool ok);
 } a;
 
 static void status_lock(void)   { xSemaphoreTake(a.lock, portMAX_DELAY); }
@@ -134,6 +138,18 @@ static void saved_erase(void)
     }
     memset(&a.saved, 0, sizeof(a.saved));
     ESP_LOGI(TAG, "forgot the remembered device");
+}
+
+void ulani_app_slots_changed(void)
+{
+    ulani_slot_info_t info[ULANI_SLOT_MAX];
+    for (uint8_t slot = ULANI_SLOT_MIN; slot <= ULANI_SLOT_MAX; slot++) {
+        ulani_store_info(slot, &info[slot - 1]);
+    }
+
+    status_lock();
+    memcpy(a.status.slots, info, sizeof(info));
+    status_unlock();
 }
 
 static void publish_saved(void)
@@ -279,6 +295,37 @@ static void refresh_device_info(void)
     a.last_op_us = esp_timer_get_time();
 }
 
+/*
+ * Sending needs a link, and by design there often is not one: the firmware
+ * hands the calendar back after five minutes idle so the official app can have
+ * a turn, and a frame from Tesserae arrives on the server's schedule rather
+ * than ours -- fifteen minutes later, with the radio long since released.
+ *
+ * So a send reaches for the calendar itself instead of failing. The idle
+ * release stays deliberate; it just no longer means the next image is lost.
+ */
+static esp_err_t ensure_connected(void)
+{
+    if (ulani_ble_is_connected()) {
+        return ESP_OK;
+    }
+    if (a.saved.addr[0] == 0) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_LOGI(TAG, "not connected; reaching %s first", a.saved.addr);
+    status_lock();
+    strlcpy(a.status.connected_addr, a.saved.addr, sizeof(a.status.connected_addr));
+    status_unlock();
+
+    esp_err_t err = ulani_ble_connect(a.saved.addr, 15000);
+    if (err != ESP_OK) {
+        return err;
+    }
+    refresh_device_info();
+    return ESP_OK;
+}
+
 static void handle_cmd(const cmd_t *cmd)
 {
     esp_err_t err;
@@ -360,8 +407,65 @@ static void handle_cmd(const cmd_t *cmd)
         }
         break;
 
+    case CMD_SEND_SLOT: {
+        clear_error();
+
+        err = ensure_connected();
+        if (err != ESP_OK) {
+            set_error(err == ESP_ERR_NOT_FOUND
+                          ? "no calendar remembered; connect to one first"
+                          : "could not reach the calendar",
+                      err);
+            break;
+        }
+
+        ulani_store_reader_t reader;
+        ulani_payload_src_t  src;
+
+        err = ulani_store_payload_src(cmd->slot, &reader, &src);
+        if (err != ESP_OK) {
+            set_error("no image stored for that slot", err);
+            break;
+        }
+
+        ESP_LOGI(TAG, "sending stored image to slot %u", cmd->slot);
+        err = ulani_ble_send_image(cmd->slot, &src);
+        ulani_store_reader_close(&reader);
+
+        if (err != ESP_OK) {
+            set_error("send image", err);
+        } else {
+            /*
+             * Repaint only if this page is the one on screen -- otherwise the
+             * panel keeps showing an image the slot no longer holds. Ask it
+             * live rather than trusting the snapshot, which a button press on
+             * the device makes stale (matches CMD_TEST_IMAGE below).
+             */
+            uint8_t active = 0;
+            if (ulani_ble_get_active_slot(&active) == ESP_OK && active == cmd->slot) {
+                ESP_LOGI(TAG, "slot %u is on screen; repainting it", cmd->slot);
+                ulani_ble_set_active_slot(cmd->slot);
+            }
+        }
+        if (a.slot_sent_cb) {
+            a.slot_sent_cb(cmd->slot, err == ESP_OK);
+        }
+        a.last_op_us = esp_timer_get_time();
+        break;
+    }
+
     case CMD_TEST_IMAGE: {
         clear_error();
+
+        err = ensure_connected();
+        if (err != ESP_OK) {
+            set_error(err == ESP_ERR_NOT_FOUND
+                          ? "no calendar remembered; connect to one first"
+                          : "could not reach the calendar",
+                      err);
+            break;
+        }
+
         static uint32_t seed;
         ulani_payload_src_t pattern;
         ulani_testpattern_src(&pattern, &seed, cmd->arg);
@@ -497,6 +601,11 @@ static void worker_task(void *param)
 
 /* ------------------------------------------------------------ public API */
 
+void ulani_app_set_slot_sent_cb(void (*cb)(uint8_t slot, bool ok))
+{
+    a.slot_sent_cb = cb;
+}
+
 esp_err_t ulani_app_start(void)
 {
     memset(&a, 0, sizeof(a));
@@ -511,6 +620,7 @@ esp_err_t ulani_app_start(void)
     saved_load();
     a.auto_connect = (a.saved.addr[0] != 0);
     publish_saved();
+    ulani_app_slots_changed();
 
     ulani_ble_cfg_t cfg = { .event_cb = on_ble_event, .event_user = NULL };
     esp_err_t err = ulani_ble_init(&cfg);
@@ -597,6 +707,15 @@ esp_err_t ulani_app_cmd_set_slot(uint8_t slot)
 esp_err_t ulani_app_cmd_refresh(void)
 {
     cmd_t cmd = { .id = CMD_REFRESH };
+    return post(&cmd);
+}
+
+esp_err_t ulani_app_cmd_send_slot(uint8_t slot)
+{
+    if (slot < ULANI_SLOT_MIN || slot > ULANI_SLOT_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    cmd_t cmd = { .id = CMD_SEND_SLOT, .slot = slot };
     return post(&cmd);
 }
 
