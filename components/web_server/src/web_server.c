@@ -135,6 +135,7 @@ static esp_err_t get_status(httpd_req_t *req)
     cJSON *xfer = cJSON_AddObjectToObject(root, "transfer");
     cJSON_AddBoolToObject(xfer, "active", st.transfer_active);
     cJSON_AddNumberToObject(xfer, "slot", st.transfer_slot);
+    cJSON_AddNumberToObject(xfer, "attempt", st.transfer_attempt);
     cJSON_AddNumberToObject(xfer, "sent", st.transfer_sent);
     cJSON_AddNumberToObject(xfer, "total", st.transfer_total);
 

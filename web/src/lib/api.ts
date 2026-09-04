@@ -22,7 +22,7 @@ export interface Status {
   address: string;
   name: string;
   error: string;
-  transfer: { active: boolean; slot: number; sent: number; total: number };
+  transfer: { active: boolean; slot: number; attempt: number; sent: number; total: number };
   lastTransfer?: { ok: boolean; rsp: number };
   /* Scan results ride along with the status so the UI needs only one poll. */
   devices: Device[];

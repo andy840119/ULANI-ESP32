@@ -310,7 +310,12 @@ function renderStatus(st: Status) {
   if (transferring) {
     const pct = Math.round((st.transfer.sent / st.transfer.total) * 100);
     fill.style.width = `${pct}%`;
-    $('#s-pct').textContent = `第 ${st.transfer.slot} 張 · ${pct}%`;
+    /*
+     * A transfer restarts from 0 on a retry; say so, or the bar dropping back
+     * and climbing again looks like it stalled.
+     */
+    const retry = st.transfer.attempt > 1 ? `　重試 ${st.transfer.attempt}` : '';
+    $('#s-pct').textContent = `第 ${st.transfer.slot} 張 · ${pct}%${retry}`;
   } else {
     fill.style.width = '0';
     $('#s-pct').textContent = '—';
