@@ -10,6 +10,7 @@
 #include "esp_timer.h"
 #include "nvs.h"
 
+#include "net_provision.h"
 #include "ulani_app.h"
 
 static const char *TAG = "ulani_app";
@@ -498,7 +499,9 @@ static void handle_cmd(const cmd_t *cmd)
 
         ESP_LOGI(TAG, "sending stored image to slot %u%s", cmd->slot,
                  (out.read != src.read) ? " (badged)" : "");
+        net_power_boost(true);
         err = ulani_ble_send_image(cmd->slot, &out);
+        net_power_boost(false);
         ulani_store_reader_close(&reader);
 
         if (err != ESP_OK) {
@@ -550,7 +553,9 @@ static void handle_cmd(const cmd_t *cmd)
         ESP_LOGI(TAG, "sending test pattern to slot %u (seed %u, %s)",
                  cmd->slot, (unsigned)cmd->arg,
                  cmd->activate ? "activating" : "leaving the display alone");
+        net_power_boost(true);
         err = ulani_ble_send_image(cmd->slot, &src);
+        net_power_boost(false);
         if (err != ESP_OK) {
             set_error("send image", err);
             a.last_op_us = esp_timer_get_time();
