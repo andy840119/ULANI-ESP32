@@ -26,16 +26,14 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="row"><span>狀態</span><strong id="s-state">—</strong></div>
     <div class="row"><span>裝置</span><strong id="s-device">未連線</strong></div>
     <div class="row"><span>目前相框</span><strong id="s-slot">—</strong></div>
-    <div class="row"><span>電量</span><strong id="s-battery">—</strong></div>
+    <div class="row meter-row" id="s-battery-row">
+      <div class="rowfill" id="s-battery-fill"></div>
+      <span>電量</span><strong id="s-battery">—</strong>
+    </div>
     <div class="row"><span>日曆資料更新於</span><strong id="s-age">—</strong></div>
-    <div class="meter" id="s-battery-meter" hidden>
-      <div class="bar"><div class="fill" id="s-battery-fill"></div></div>
-    </div>
-    <div class="row" id="s-progress-row" hidden>
+    <div class="row meter-row" id="s-progress-row">
+      <div class="rowfill" id="s-fill"></div>
       <span>傳送進度</span><strong id="s-pct">—</strong>
-    </div>
-    <div class="meter" id="s-progress" hidden>
-      <div class="bar"><div class="fill" id="s-fill"></div></div>
     </div>
     <p class="error" id="s-error" hidden></p>
   </section>
@@ -273,11 +271,13 @@ function renderAge(st: Status) {
 }
 
 function renderBattery(st: Status) {
-  const meter = $<HTMLDivElement>('#s-battery-meter');
+  const row = $<HTMLDivElement>('#s-battery-row');
+  const fill = $<HTMLDivElement>('#s-battery-fill');
 
   if (st.batteryLevel === undefined) {
     $('#s-battery').textContent = '—';
-    meter.hidden = true;
+    fill.style.width = '0';
+    row.classList.remove('low');
     return;
   }
 
@@ -285,9 +285,8 @@ function renderBattery(st: Status) {
   const raw = `0x${st.batteryRaw.toString(16).padStart(4, '0')}`;
   $('#s-battery').innerHTML = `${pct}% <small>${raw}</small>`;
 
-  meter.hidden = false;
-  $<HTMLDivElement>('#s-battery-fill').style.width = `${pct}%`;
-  meter.classList.toggle('low', pct <= 20);
+  fill.style.width = `${pct}%`;
+  row.classList.toggle('low', pct <= 20);
 }
 
 function renderStatus(st: Status) {
@@ -301,13 +300,20 @@ function renderStatus(st: Status) {
 
   if (!busy) showError(st.error);
 
+  /*
+   * The transfer row stays put; only its fill comes and goes. Popping the
+   * whole row in on a transfer shifted everything below it, which read as the
+   * UI jumping.
+   */
   const transferring = st.transfer.active && st.transfer.total > 0;
-  $<HTMLDivElement>('#s-progress-row').hidden = !transferring;
-  $<HTMLDivElement>('#s-progress').hidden = !transferring;
+  const fill = $<HTMLDivElement>('#s-fill');
   if (transferring) {
     const pct = Math.round((st.transfer.sent / st.transfer.total) * 100);
-    $<HTMLDivElement>('#s-fill').style.width = `${pct}%`;
+    fill.style.width = `${pct}%`;
     $('#s-pct').textContent = `第 ${st.transfer.slot} 張 · ${pct}%`;
+  } else {
+    fill.style.width = '0';
+    $('#s-pct').textContent = '—';
   }
 
   document.querySelectorAll<HTMLButtonElement>('#send-buttons button').forEach((b) => {
