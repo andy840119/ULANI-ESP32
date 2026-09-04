@@ -132,6 +132,9 @@ static esp_err_t get_status(httpd_req_t *req)
         cJSON_AddBoolToObject(saved, "autoConnect", st.auto_connect);
     }
 
+    /* How long the link is held before the board hands the calendar back. */
+    cJSON_AddNumberToObject(root, "idleTimeoutMs", st.idle_timeout_ms);
+
     cJSON *xfer = cJSON_AddObjectToObject(root, "transfer");
     cJSON_AddBoolToObject(xfer, "active", st.transfer_active);
     cJSON_AddNumberToObject(xfer, "slot", st.transfer_slot);
@@ -214,6 +217,20 @@ static esp_err_t post_refresh(httpd_req_t *req)
     return ulani_app_cmd_refresh() == ESP_OK
                ? send_ok(req)
                : send_err(req, "503 Service Unavailable", "busy");
+}
+
+static esp_err_t post_settings(httpd_req_t *req)
+{
+    cJSON *body = read_json_body(req);
+    if (!body) {
+        return send_err(req, "400 Bad Request", "invalid json");
+    }
+    cJSON *idle = cJSON_GetObjectItem(body, "idleTimeoutMs");
+    if (cJSON_IsNumber(idle) && idle->valuedouble >= 0) {
+        ulani_app_set_idle_timeout_ms((uint32_t)idle->valuedouble);
+    }
+    cJSON_Delete(body);
+    return send_ok(req);
 }
 
 static esp_err_t post_slot(httpd_req_t *req)
@@ -585,6 +602,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/connect",       .method = HTTP_POST, .handler = post_connect },
         { .uri = "/api/disconnect",    .method = HTTP_POST, .handler = post_disconnect },
         { .uri = "/api/refresh",       .method = HTTP_POST, .handler = post_refresh },
+        { .uri = "/api/settings",      .method = HTTP_POST, .handler = post_settings },
         { .uri = "/api/forget-device", .method = HTTP_POST, .handler = post_forget_device },
         { .uri = "/api/slot",          .method = HTTP_POST, .handler = post_slot },
         { .uri = "/api/test-image",    .method = HTTP_POST, .handler = post_test },

@@ -28,6 +28,8 @@ export interface Status {
   devices: Device[];
   /* The device reconnected to on power-up. Absent if none is remembered. */
   savedDevice?: { address: string; name: string; autoConnect: boolean };
+  /* How long the link is held before the board hands the calendar back. 0 = never. */
+  idleTimeoutMs: number;
 }
 
 export interface Device {
@@ -104,6 +106,7 @@ export const api = {
   disconnect: () => post('/api/disconnect'),
   forgetDevice: () => post('/api/forget-device'),
   refresh: () => post('/api/refresh'),
+  setIdleTimeout: (ms: number) => post('/api/settings', { idleTimeoutMs: ms }),
   setSlot: (slot: number) => post('/api/slot', { slot }),
   testImage: (slot: number, seed?: number, activate = false) =>
     post('/api/test-image', { slot, seed: seed ?? 0, activate }),

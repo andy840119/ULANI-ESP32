@@ -19,6 +19,7 @@ static const char *TAG = "ulani_app";
 #define NVS_KEY_NAME  "name"
 #define NVS_KEY_TYPE  "type"
 #define NVS_KEY_BADGE "badge"
+#define NVS_KEY_IDLE  "idlems"
 
 /*
  * How long to wait before trying the remembered device again. Long enough that
@@ -67,6 +68,21 @@ static struct {
     bool           auto_connect; /* armed: keep trying to reach `saved` */
     int64_t        next_auto_us;
 
+    /*
+     * Set when we hand the calendar back after the idle timeout. Unlike
+     * clearing auto_connect, this does not forget the device or disarm the
+     * reconnect -- it just parks it: try_auto_connect() stops grabbing the
+     * radio back until a command reaches for it on demand, at which point the
+     * connect clears this and periodic reconnect resumes. See issue #21.
+     */
+    bool     idle_released;
+
+    /*
+     * How long to hold the link after the last real operation before handing
+     * it back. Runtime-configurable (issue #21 comment); 0 means never release.
+     */
+    uint32_t idle_timeout_ms;
+
     void (*slot_sent_cb)(uint8_t slot, bool ok);
 
     /* Bit i set => stamp the page badge on slot i+1 before sending it. */
@@ -114,7 +130,18 @@ static void saved_load(void)
         ESP_LOGI(TAG, "remembered device %s (%s)", a.saved.addr, a.saved.name);
     }
     nvs_get_u8(h, NVS_KEY_BADGE, &a.badge_mask);
+    nvs_get_u32(h, NVS_KEY_IDLE, &a.idle_timeout_ms);
     nvs_close(h);
+}
+
+static void idle_timeout_store(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u32(h, NVS_KEY_IDLE, a.idle_timeout_ms);
+        nvs_commit(h);
+        nvs_close(h);
+    }
 }
 
 static void badge_store(void)
@@ -338,6 +365,7 @@ static esp_err_t ensure_connected(void)
     if (err != ESP_OK) {
         return err;
     }
+    a.idle_released = false; /* reaching for it on demand re-arms auto-reconnect */
     refresh_device_info();
     return ESP_OK;
 }
@@ -383,8 +411,9 @@ static void handle_cmd(const cmd_t *cmd)
                     break;
                 }
             }
-            a.saved        = dev;
-            a.auto_connect = true;
+            a.saved         = dev;
+            a.auto_connect  = true;
+            a.idle_released = false;
             saved_store(&dev);
             publish_saved();
         }
@@ -410,6 +439,15 @@ static void handle_cmd(const cmd_t *cmd)
         break;
 
     case CMD_SET_SLOT:
+        clear_error();
+        err = ensure_connected();
+        if (err != ESP_OK) {
+            set_error(err == ESP_ERR_NOT_FOUND
+                          ? "no calendar remembered; connect to one first"
+                          : "could not reach the calendar",
+                      err);
+            break;
+        }
         err = ulani_ble_set_active_slot(cmd->slot);
         if (err != ESP_OK) {
             set_error("set slot", err);
@@ -418,9 +456,16 @@ static void handle_cmd(const cmd_t *cmd)
         break;
 
     case CMD_REFRESH:
-        if (ulani_ble_is_connected()) {
-            refresh_device_info();
+        clear_error();
+        err = ensure_connected();
+        if (err != ESP_OK) {
+            set_error(err == ESP_ERR_NOT_FOUND
+                          ? "no calendar remembered; connect to one first"
+                          : "could not reach the calendar",
+                      err);
+            break;
         }
+        refresh_device_info();
         break;
 
     case CMD_SEND_SLOT: {
@@ -552,6 +597,9 @@ static void try_auto_connect(void)
     if (!a.auto_connect || a.saved.addr[0] == 0) {
         return;
     }
+    if (a.idle_released) {
+        return; /* handed back on purpose; wait for a command to reach for it */
+    }
     if (ulani_ble_state() != ULANI_STATE_IDLE) {
         return; /* still scanning, connecting, or the host is not up yet */
     }
@@ -570,6 +618,7 @@ static void try_auto_connect(void)
         ESP_LOGW(TAG, "reconnect failed: %s (retrying)", esp_err_to_name(err));
         return;
     }
+    a.idle_released = false;
     refresh_device_info();
 }
 
@@ -591,32 +640,38 @@ static void worker_task(void *param)
 
         /* Idle tick: keep the link alive the way binaryAck() does. */
         int64_t idle_us = esp_timer_get_time() - a.last_op_us;
-        if (idle_us > (int64_t)ULANI_IDLE_TIMEOUT_MS * 1000) {
+        if (a.idle_timeout_ms != 0 &&
+            idle_us > (int64_t)a.idle_timeout_ms * 1000) {
             ESP_LOGI(TAG, "idle for %lld s, releasing the device", idle_us / 1000000);
             /*
-             * Letting go on purpose so the official app can have a turn. Do not
-             * immediately grab it back -- that would make the release useless.
+             * Let go on purpose so the official app can have a turn -- nobody
+             * needs to be here for the next Tesserae frame to land, because a
+             * command reaches for the calendar on its own (issue #21). Park
+             * the reconnect rather than disarming it: the device stays
+             * remembered, we just stop grabbing the radio back until asked.
              */
-            a.auto_connect = false;
-            publish_saved();
+            a.idle_released = true;
             ulani_ble_ask_disconnect();
             ulani_ble_disconnect();
         } else {
             /*
-             * Alternate what the keepalive asks for, and read the answer.
+             * Keep the link warm and refresh a field for free while doing it.
              *
              * binaryAck() sends the same 06 00 frame getBatteryLevel() does --
              * the only difference is whether anyone waits for the reply, and
-             * we used to throw it away every ten seconds. So both halves of
-             * this refresh a field for free: the traffic that keeps the link
-             * alive is traffic we have to send anyway, which matters with
-             * WiFi and BLE sharing one antenna. Each field lands within two
-             * ticks. A failure is left to the next tick rather than raised --
-             * the age in the status tells the UI when a reading went stale.
+             * we used to throw it away every ten seconds. So the traffic that
+             * keeps the link alive is traffic we have to send anyway, which
+             * matters with WiFi and BLE sharing one antenna.
+             *
+             * The active slot is what a button press on the device changes
+             * behind our back, so read it every tick (~10 s). The battery
+             * barely moves, so read it once a minute -- same overall traffic,
+             * a fresher slot. A failure is left to the next tick rather than
+             * raised: the age in the status tells the UI when a reading went
+             * stale.
              */
-            if (a.keepalive_tick++ & 1) {
-                read_active_slot();
-            } else {
+            read_active_slot();
+            if (a.keepalive_tick++ % 6 == 0) {
                 read_battery();
             }
         }
@@ -648,6 +703,15 @@ bool ulani_app_get_slot_badge(uint8_t slot)
     return (a.badge_mask & (1u << (slot - 1))) != 0;
 }
 
+void ulani_app_set_idle_timeout_ms(uint32_t ms)
+{
+    /* Aligned 32-bit write; the worker reads it lock-free once a tick. */
+    a.idle_timeout_ms = ms;
+    idle_timeout_store();
+    ESP_LOGI(TAG, "keep-alive set to %u ms%s", (unsigned)ms,
+             ms == 0 ? " (never release)" : "");
+}
+
 esp_err_t ulani_app_start(void)
 {
     memset(&a, 0, sizeof(a));
@@ -657,7 +721,8 @@ esp_err_t ulani_app_start(void)
     if (!a.queue || !a.lock) {
         return ESP_ERR_NO_MEM;
     }
-    a.last_op_us = esp_timer_get_time();
+    a.last_op_us    = esp_timer_get_time();
+    a.idle_timeout_ms = ULANI_IDLE_TIMEOUT_MS; /* saved_load overrides if set */
 
     saved_load();
     a.auto_connect = (a.saved.addr[0] != 0);
@@ -699,8 +764,9 @@ void ulani_app_get_status(ulani_app_status_t *out)
 {
     status_lock();
     *out = a.status;
-    out->battery_age_ms = age_ms(a.battery_us);
-    out->slot_age_ms    = age_ms(a.slot_us);
+    out->battery_age_ms  = age_ms(a.battery_us);
+    out->slot_age_ms     = age_ms(a.slot_us);
+    out->idle_timeout_ms = a.idle_timeout_ms;
     status_unlock();
 }
 
