@@ -19,17 +19,13 @@
 - C3：**`ulani-esp32c3-merged.bin`**
 - S3：**`ulani-esp32s3-merged.bin`**
 
-merged 檔一個就包含 bootloader、分割表與韌體，直接燒在位置 `0x0`，最省事，
-**建議用這個**。
+merged 檔一個就包含 bootloader、分割表與韌體，直接燒在位置 `0x0`，這是你唯一需要
+的檔案。
 
-如果你的工具需要分開的檔案（進階），同一個 Release 也有（`<chip>` 是 `esp32c3`
-或 `esp32s3`）：
-
-| 檔案 | 燒錄位置 |
-| --- | --- |
-| `bootloader-<chip>.bin` | `0x0` |
-| `partition-table-<chip>.bin` | `0x8000` |
-| `ulani-<chip>.bin` | `0x10000` |
+> 進階：如果你的工具需要分開的 `bootloader` / `partition-table` / app 三個檔，
+> 它們沒有放進 Release，但可以到 [Actions](https://github.com/andy840119/ULANI-ESP32/actions)
+> 對應那次建置的 **Artifacts** 下載（各自的燒錄位置是 `0x0` / `0x8000` /
+> `0x10000`）。
 
 ## 3. 開刷機工具
 
@@ -39,7 +35,6 @@ merged 檔一個就包含 bootloader、分割表與韌體，直接燒在位置 `
 2. 按 **Connect**，在跳出的視窗選擇板子的序列埠（找不到就看下面的疑難排解）。
 3. 連上後，在檔案列表：
    - 位置填 `0x0`，選剛剛下載、**對應你晶片**的那個 merged 檔。
-   - （若用分開檔案，就依上表逐一加上三個檔案與各自的位置。）
 4. 按 **Program** 開始燒錄，跑完就完成了。板子會自動重開。
 
 > 燒錄設定（flash mode `dio`、freq `80m`、size `4MB`）已經包在 merged 檔裡，

@@ -40,10 +40,10 @@ yyyy.mmdd.count
    ```
 
 3. 推上去後到 **Actions** 看 `release` 這條工作流程跑完（會 build 兩種晶片）。
-4. 完成後到 **Releases** 頁面，該 tag 的 Release 底下 **Assets** 就會有：
-   - `ulani-esp32c3-merged.bin` / `ulani-esp32s3-merged.bin`（各自燒 `0x0`）
-   - 以及分開的 `bootloader-<chip>.bin`、`partition-table-<chip>.bin`、
-     `ulani-<chip>.bin` 與 `flasher_args-<chip>.json`
+4. 完成後到 **Releases** 頁面，該 tag 的 Release 底下 **Assets** 就會有使用者要燒的
+   兩個檔：`ulani-esp32c3-merged.bin` 與 `ulani-esp32s3-merged.bin`（各自燒 `0x0`）。
+   分開的 `bootloader` / `partition-table` / app 等檔不放進 Release，改放在該次
+   Actions run 的 **Artifacts**，需要除錯才用得到。
 5. 需要的話在 Release 頁面補上這次改了什麼的說明。
 
 > 想在不打 tag 的情況下先驗證建置，可以到 Actions 頁面對這條工作流程按
