@@ -259,6 +259,33 @@ footer {
   color: var(--muted);
 }
 
+/* A reading whose age says it is frozen (link down) or suspiciously old. */
+.row small.age.stale {
+  color: var(--danger);
+}
+
+/* A labelled form control that sits on its own, outside a .join form. */
+.field {
+  display: block;
+  margin-top: 0.5rem;
+}
+
+.field > span {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+}
+
+.field select {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
 .join {
   margin-top: 1rem;
   padding-top: 1rem;

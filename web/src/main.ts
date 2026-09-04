@@ -30,7 +30,6 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <div class="rowfill" id="s-battery-fill"></div>
       <span>電量</span><strong id="s-battery">—</strong>
     </div>
-    <div class="row"><span>日曆資料更新於</span><strong id="s-age">—</strong></div>
     <div class="row meter-row" id="s-progress-row">
       <div class="rowfill" id="s-fill"></div>
       <span>傳送進度</span><strong id="s-pct">—</strong>
@@ -105,6 +104,24 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <div class="slots" id="slot-buttons">
         ${[1, 2, 3, 4].map((n) => `<button data-slot="${n}">${n}</button>`).join('')}
       </div>
+    </section>
+    <section class="card" id="settings-card">
+      <h2>3. 連線設定</h2>
+      <label class="field">
+        <span>閒置多久後把日曆交還</span>
+        <select id="idle-timeout">
+          <option value="60000">1 分鐘</option>
+          <option value="300000">5 分鐘</option>
+          <option value="900000">15 分鐘</option>
+          <option value="1800000">30 分鐘</option>
+          <option value="0">一直保持連線</option>
+        </select>
+      </label>
+      <p class="hint">
+        傳完圖或手動連線後會先保持連線這麼久，時間到就把日曆交還，讓官方 App
+        連得上。之後要送圖時板子會自己重新連回來，不需要有人在旁邊按。選「一直
+        保持連線」就不會主動交還。
+      </p>
     </section>
   </div>
 
@@ -264,10 +281,22 @@ function ago(ms: number): string {
   return m < 60 ? `${m} 分鐘前` : `${Math.round(m / 60)} 小時前`;
 }
 
-function renderAge(st: Status) {
-  const ages = [st.batteryAgeMs, st.slotAgeMs].filter(
-    (v): v is number => v !== undefined);
-  $('#s-age').textContent = ages.length ? ago(Math.max(...ages)) : '—';
+/*
+ * A reading is only ever as fresh as the last time the firmware asked, so each
+ * value carries its own age -- battery and slot age independently now that the
+ * keepalive reads the slot every tick and the battery once a minute. When the
+ * link is down (the board hands the calendar back when idle) the numbers are
+ * frozen at their last value; mark them so a stale reading is never mistaken
+ * for a live one.
+ */
+const STALE_MS = 90_000;
+
+function ageBadge(ms: number | undefined, connected: boolean): string {
+  if (ms === undefined) return '';
+  const frozen = !connected;
+  const stale = frozen || ms > STALE_MS;
+  const note = frozen ? '，已離線' : '';
+  return ` <small class="age${stale ? ' stale' : ''}">${ago(ms)}${note}</small>`;
 }
 
 function renderBattery(st: Status) {
@@ -283,7 +312,8 @@ function renderBattery(st: Status) {
 
   const pct = Math.max(0, Math.min(100, st.batteryLevel));
   const raw = `0x${st.batteryRaw.toString(16).padStart(4, '0')}`;
-  $('#s-battery').innerHTML = `${pct}% <small>${raw}</small>`;
+  $('#s-battery').innerHTML =
+    `${pct}% <small>${raw}</small>${ageBadge(st.batteryAgeMs, st.connected)}`;
 
   fill.style.width = `${pct}%`;
   row.classList.toggle('low', pct <= 20);
@@ -294,9 +324,10 @@ function renderStatus(st: Status) {
   $('#s-device').textContent = st.connected
     ? `${st.name || 'ULANI'} (${st.address})`
     : '未連線';
-  $('#s-slot').textContent = st.activeSlot ? String(st.activeSlot) : '—';
+  $('#s-slot').innerHTML =
+    (st.activeSlot ? String(st.activeSlot) : '—') + ageBadge(st.slotAgeMs, st.connected);
   renderBattery(st);
-  renderAge(st);
+  renderIdleTimeout(st);
 
   if (!busy) showError(st.error);
 
@@ -334,6 +365,14 @@ function renderStatus(st: Status) {
 
   renderDevices(st.devices, st.state === 'scanning');
   renderSaved(st);
+}
+
+/* Reflect the stored keep-alive choice, but never while the user is changing it. */
+function renderIdleTimeout(st: Status) {
+  const sel = $<HTMLSelectElement>('#idle-timeout');
+  if (document.activeElement !== sel) {
+    sel.value = String(st.idleTimeoutMs);
+  }
 }
 
 function renderSaved(st: Status) {
@@ -378,6 +417,10 @@ $('#slot-buttons').addEventListener('click', (ev) => {
   const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>('button[data-slot]');
   if (!btn) return;
   guard(() => api.setSlot(Number(btn.dataset.slot)));
+});
+
+$('#idle-timeout').addEventListener('change', (ev) => {
+  guard(() => api.setIdleTimeout(Number((ev.target as HTMLSelectElement).value)));
 });
 
 /* ---------------------------------------------------------------- wifi */
@@ -482,13 +525,42 @@ mountTesserae(guard);
  * shared with the captive-portal DNS, and a phone already holds several
  * keep-alive connections open on its own.
  */
+/*
+ * The board hands the calendar back when it sits idle, so opening this page to
+ * a remembered-but-disconnected device means the numbers on screen are frozen.
+ * Reach for it once on load -- explicitly, not as a side effect of every poll
+ * -- so the page comes up live. The firmware re-arms auto-reconnect when it
+ * connects, so this is the only nudge it needs.
+ */
+let connectOnLoadDone = false;
+function maybeConnectOnLoad(st: Status) {
+  if (connectOnLoadDone) return;
+  connectOnLoadDone = true;
+  if (st.savedDevice && !st.connected) {
+    api.connect(st.savedDevice.address).catch(() => {});
+  }
+}
+
+/*
+ * A single dropped poll is not worth shouting about -- a phone juggling the
+ * hotspot and its own keep-alives drops one now and then. Only call it lost
+ * after several in a row, and clear the moment one succeeds.
+ */
+let pollFails = 0;
+const POLL_FAIL_LIMIT = 3;
+
 async function poll() {
   try {
-    renderStatus(await api.status());
+    const st = await api.status();
+    pollFails = 0;
+    renderStatus(st);
+    maybeConnectOnLoad(st);
     renderWifi(await api.wifi());
     renderTesserae((await api.tesserae()).clients);
   } catch {
-    $('#s-state').textContent = '無法連上 ESP32';
+    if (++pollFails >= POLL_FAIL_LIMIT) {
+      $('#s-state').textContent = '無法連上 ESP32';
+    }
   }
   setTimeout(poll, 2000);
 }
