@@ -394,6 +394,37 @@ code {
   margin: 0;
 }
 
+/* The card header doubles as an expand/collapse control. */
+button.tc-toggle {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  align-items: center;
+}
+
+button.tc-toggle h3 {
+  margin-right: auto;
+}
+
+.tc-toggle .chevron {
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+
+.tclient.open .tc-toggle .chevron {
+  transform: rotate(180deg);
+}
+
+/* A collapsed client is just its header, so drop the header's bottom gap. */
+.tclient:not(.open) .slot-head {
+  margin-bottom: 0;
+}
+
 .tag {
   font-size: 0.8rem;
   color: var(--muted);

@@ -30,11 +30,14 @@ const STATE_LABEL: Record<TesseraeState, string> = {
 function clientCard(slot: number): string {
   return `
     <section class="card tclient" id="tc-${slot}">
-      <div class="slot-head">
+      <button type="button" class="slot-head tc-toggle" id="tc-toggle-${slot}"
+              aria-expanded="false">
         <h3>第 ${slot} 頁</h3>
         <span class="tag" id="tc-state-${slot}">未設定</span>
-      </div>
+        <span class="chevron" aria-hidden="true">▾</span>
+      </button>
 
+      <div class="tclient-body" id="tc-body-${slot}" hidden>
       <div class="preview loadable" id="tc-preview-${slot}">
         <span class="placeholder">尚未收到圖片</span>
       </div>
@@ -79,6 +82,7 @@ function clientCard(slot: number): string {
           </div>
         </form>
       </details>
+      </div>
     </section>`;
 }
 
@@ -144,12 +148,37 @@ function describeLast(epoch: number): string {
 /* Slots whose form has been pre-filled once, so polling never clobbers typing. */
 const filled = new Set<number>();
 
+/* Slots whose expand state has been decided, so the default only applies once. */
+const expandDecided = new Set<number>();
+
+function expand(slot: number, on: boolean, remember = true) {
+  $<HTMLDivElement>(`#tc-body-${slot}`).hidden = !on;
+  $(`#tc-toggle-${slot}`).setAttribute('aria-expanded', String(on));
+  $(`#tc-${slot}`).classList.toggle('open', on);
+  if (remember) {
+    localStorage.setItem(`ulani.tc.${slot}`, on ? '1' : '0');
+  }
+}
+
 function input(slot: number, cls: string): HTMLInputElement {
   return $(`#tc-${slot} .${cls}`) as HTMLInputElement;
 }
 
 function renderClient(c: TesseraeClient) {
   const n = c.slot;
+
+  /*
+   * First time we hear about a slot, open it if the user has an explicit
+   * preference or if it is already configured -- an unused page stays a
+   * one-line header the user can expand when they want it.
+   */
+  if (!expandDecided.has(n)) {
+    expandDecided.add(n);
+    const saved = localStorage.getItem(`ulani.tc.${n}`);
+    const on = saved !== null ? saved === '1' : c.state !== 'disabled';
+    expand(n, on, false);
+  }
+
   $(`#tc-state-${n}`).textContent = STATE_LABEL[c.state] ?? c.state;
   $(`#tc-last-${n}`).textContent = describeLast(c.lastFrameEpoch);
 
@@ -195,6 +224,11 @@ function setPreview(slot: number, node: HTMLElement) {
 export function mountTesserae(guard: (fn: () => Promise<unknown>) => void) {
   for (const n of SLOTS) {
     const card = $(`#tc-${n}`);
+
+    $(`#tc-toggle-${n}`).addEventListener('click', () => {
+      const open = $(`#tc-toggle-${n}`).getAttribute('aria-expanded') === 'true';
+      expand(n, !open);
+    });
 
     card.querySelector('form')!.addEventListener('submit', (ev) => {
       ev.preventDefault();
