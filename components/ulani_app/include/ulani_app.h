@@ -58,6 +58,12 @@ typedef struct {
     char saved_name[32];
     bool auto_connect;
 
+    /*
+     * How long the link is held after the last operation before the board
+     * hands the calendar back. 0 = never release (stay connected). See #21.
+     */
+    uint32_t idle_timeout_ms;
+
     /* What is stored for each slot, indexed 0..3 for slots 1..4. */
     ulani_slot_info_t slots[ULANI_SLOT_MAX];
 } ulani_app_status_t;
@@ -92,6 +98,13 @@ esp_err_t ulani_app_cmd_refresh(void);   /* battery + active slot */
 
 /* Forgets the remembered device and stops reconnecting to it. */
 esp_err_t ulani_app_cmd_forget_device(void);
+
+/*
+ * How long the board keeps the calendar connected after the last operation
+ * before handing it back so the official app can have a turn. 0 keeps the link
+ * forever. Persists across reboots. Takes effect from the next idle tick.
+ */
+void ulani_app_set_idle_timeout_ms(uint32_t ms);
 
 /*
  * Phase 1 self-test: generates a 192000-byte pattern on the fly from seed and
