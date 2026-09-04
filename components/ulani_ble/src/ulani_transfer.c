@@ -115,7 +115,7 @@ typedef enum {
  * the panel last said; *err carries a transport error when there is one.
  */
 static attempt_result_t send_attempt(uint8_t slot, const ulani_payload_src_t *src,
-                                     uint16_t crc, uint32_t gap_ms,
+                                     uint16_t crc, uint32_t gap_ms, uint8_t attempt,
                                      uint16_t *rsp, esp_err_t *err)
 {
     *rsp = 0;
@@ -129,7 +129,7 @@ static attempt_result_t send_attempt(uint8_t slot, const ulani_payload_src_t *sr
 
     ulani_data_result_arm();
 
-    for (int attempt = 1;; attempt++) {
+    for (int htry = 1;; htry++) {
         *err = ulani_op_exec(header, (uint16_t)hlen, true, rsp);
 
         /* Anything but silence or a refusal is a real transport error. */
@@ -140,11 +140,11 @@ static attempt_result_t send_attempt(uint8_t slot, const ulani_payload_src_t *sr
         if (*err == ESP_OK && *rsp == ULANI_RSP_SEND_ACCEPTED) {
             break;
         }
-        if (attempt >= SEND_HEADER_ATTEMPTS || ulani_transfer_abort_requested() ||
+        if (htry >= SEND_HEADER_ATTEMPTS || ulani_transfer_abort_requested() ||
             !ulani_ble_is_connected()) {
             if (*err == ESP_ERR_TIMEOUT) {
                 ESP_LOGW(TAG, "panel never answered the send request (%d tries)",
-                         attempt);
+                         htry);
             } else {
                 ESP_LOGW(TAG, "panel refused the transfer, rsp=%04x", *rsp);
             }
@@ -158,7 +158,7 @@ static attempt_result_t send_attempt(uint8_t slot, const ulani_payload_src_t *sr
 
         ESP_LOGW(TAG, "send request try %d got %s (rsp=%04x); panel likely "
                       "repainting, retrying the header",
-                 attempt, esp_err_to_name(*err), *rsp);
+                 htry, esp_err_to_name(*err), *rsp);
         vTaskDelay(pdMS_TO_TICKS(SEND_RETRY_DELAY_MS));
     }
 
@@ -220,9 +220,10 @@ static attempt_result_t send_attempt(uint8_t slot, const ulani_payload_src_t *sr
 
         if (index % PROGRESS_EVERY == 0 || off >= ULANI_PAYLOAD_BYTES) {
             ulani_event_t ev = { .type = ULANI_EV_TRANSFER_PROGRESS,
-                                 .progress = { .sent  = (uint32_t)off,
-                                               .total = (uint32_t)ULANI_PAYLOAD_BYTES,
-                                               .slot  = slot } };
+                                 .progress = { .sent    = (uint32_t)off,
+                                               .total   = (uint32_t)ULANI_PAYLOAD_BYTES,
+                                               .slot    = slot,
+                                               .attempt = attempt } };
             ulani_emit(&ev);
         }
     }
@@ -273,8 +274,11 @@ esp_err_t ulani_ble_send_image(uint8_t slot, const ulani_payload_src_t *src)
     attempt_result_t r   = ATTEMPT_FATAL;
 
     for (int try = 1; try <= SEND_IMAGE_ATTEMPTS; try++) {
-        uint32_t gap = (uint32_t)CONFIG_ULANI_BLE_CHUNK_GAP_MS * try;
-        r = send_attempt(slot, src, crc, gap, &rsp, &err);
+        /* Widen the gap on a retry, but no further than doubling: a very slow
+         * pass is worse UX and has never been shown to help. */
+        int mult = try < 2 ? try : 2;
+        uint32_t gap = (uint32_t)CONFIG_ULANI_BLE_CHUNK_GAP_MS * mult;
+        r = send_attempt(slot, src, crc, gap, (uint8_t)try, &rsp, &err);
 
         if (r == ATTEMPT_OK || r == ATTEMPT_FATAL) {
             break;

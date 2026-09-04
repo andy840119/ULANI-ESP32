@@ -58,7 +58,7 @@ typedef struct {
         struct { ulani_state_t state; }                    state_changed;
         struct { ulani_device_t dev; }                     device_found;
         struct { int reason; }                             disconnected;
-        struct { uint32_t sent; uint32_t total; uint8_t slot; } progress;
+        struct { uint32_t sent; uint32_t total; uint8_t slot; uint8_t attempt; } progress;
         struct { bool ok; uint16_t rsp; uint8_t slot; }    transfer_done;
         struct { uint8_t slot; }                           slot_changed;
     };

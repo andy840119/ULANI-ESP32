@@ -41,6 +41,7 @@ typedef struct {
 
     bool     transfer_active;
     uint8_t  transfer_slot;
+    uint8_t  transfer_attempt; /* 1 = first try; >1 = a retry is under way */
     uint32_t transfer_sent;
     uint32_t transfer_total;
 

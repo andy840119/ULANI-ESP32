@@ -217,10 +217,11 @@ static void on_ble_event(const ulani_event_t *ev, void *user)
         break;
 
     case ULANI_EV_TRANSFER_PROGRESS:
-        a.status.transfer_active = true;
-        a.status.transfer_slot   = ev->progress.slot;
-        a.status.transfer_sent   = ev->progress.sent;
-        a.status.transfer_total  = ev->progress.total;
+        a.status.transfer_active  = true;
+        a.status.transfer_slot    = ev->progress.slot;
+        a.status.transfer_attempt = ev->progress.attempt;
+        a.status.transfer_sent    = ev->progress.sent;
+        a.status.transfer_total   = ev->progress.total;
         break;
 
     case ULANI_EV_TRANSFER_DONE:
