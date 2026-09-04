@@ -57,6 +57,12 @@ function clientCard(slot: number): string {
         <button type="button" class="tc-send">把圖片送到 ULANI 電子日曆</button>
       </div>
 
+      <label class="toggle">
+        <input type="checkbox" class="tc-badge">
+        <span>在右下角標上頁碼（${slot}）</span>
+      </label>
+      <p class="hint">改這個之後，下一次送圖才會套用；想馬上看效果就按上面的送出。</p>
+
       <details class="tsettings" id="tc-settings-${slot}">
         <summary>設定這一頁的 server</summary>
         <form class="join" data-slot="${slot}">
@@ -215,6 +221,12 @@ function renderClient(c: TesseraeClient) {
   /* Nothing to send until a frame has been stored for this page. */
   ($(`#tc-${n} .tc-send`) as HTMLButtonElement).disabled = !c.hasFrame;
 
+  /* Reflect the stored badge setting, but never while the user is toggling it. */
+  const badge = $(`#tc-${n} .tc-badge`) as HTMLInputElement;
+  if (document.activeElement !== badge) {
+    badge.checked = c.badge;
+  }
+
   if (!filled.has(n) && c.serverUrl) {
     filled.add(n);
     input(n, 'tc-url').value = c.serverUrl;
@@ -269,6 +281,10 @@ export function mountTesserae(guard: (fn: () => Promise<unknown>) => void) {
 
     card.querySelector('.tc-send')!.addEventListener('click', () =>
       guard(() => api.sendSlot(n)),
+    );
+
+    card.querySelector('.tc-badge')!.addEventListener('change', (ev) =>
+      guard(() => api.setSlotBadge(n, (ev.target as HTMLInputElement).checked)),
     );
 
     card.querySelector('.tc-forget')!.addEventListener('click', () =>

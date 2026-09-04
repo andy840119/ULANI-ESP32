@@ -70,6 +70,15 @@ esp_err_t ulani_app_start(void);
  */
 void ulani_app_set_slot_sent_cb(void (*cb)(uint8_t slot, bool ok));
 
+/*
+ * Whether to stamp the page number in the corner of slot's image before it is
+ * sent. Persists across reboots. Applies to any send of that slot -- a
+ * Tesserae frame or a manual one -- so a photo of the panel tells you which
+ * page you are looking at.
+ */
+void ulani_app_set_slot_badge(uint8_t slot, bool on);
+bool ulani_app_get_slot_badge(uint8_t slot);
+
 void ulani_app_get_status(ulani_app_status_t *out);
 size_t ulani_app_get_devices(ulani_device_t *out, size_t max);
 

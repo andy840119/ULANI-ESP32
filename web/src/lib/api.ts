@@ -71,6 +71,8 @@ export interface TesseraeClient {
   lastSentEpoch: number;
   /* A frame is stored for this slot and can be previewed. */
   hasFrame: boolean;
+  /* Stamp the page number in the corner before sending this page. */
+  badge: boolean;
   error: string;
 }
 
@@ -117,6 +119,8 @@ export const api = {
   tesseraePoll: (slot: number) => post('/api/tesserae/poll', { slot }),
   tesseraeForget: (slot: number) => post('/api/tesserae/forget', { slot }),
   sendSlot: (slot: number) => post('/api/slot/send', { slot }),
+  setSlotBadge: (slot: number, on: boolean) =>
+    post('/api/slot/badge', { slot, on }),
 
   async slotImage(slot: number): Promise<Uint8Array> {
     const res = await fetch(`/api/slot/download?slot=${slot}`);
