@@ -1,7 +1,11 @@
 # ---- target ----
-CONFIG_IDF_TARGET="esp32c3"
+# Chosen at build time (`idf.py set-target esp32c3` / `esp32s3`), not pinned
+# here, so the same tree builds both released firmwares. Everything below is
+# target-agnostic.
 
 # ---- partition table ----
+# 4 MB is the lowest common denominator across C3 and S3 boards; a board with
+# more flash still boots this, it just leaves the extra unused.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
