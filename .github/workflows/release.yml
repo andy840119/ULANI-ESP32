@@ -43,12 +43,18 @@ jobs:
 
       # merge-bin folds bootloader + partition table + app into one image that
       # flashes at offset 0 -- the single file the web flasher asks the user for.
+      # ULANI_FW_VERSION becomes the firmware version (PROJECT_VER). A tag build
+      # stamps the tag, e.g. 2026.0905.0; a manual dispatch off a branch stays
+      # "dev" (the CMake default), so only tagged builds read as production.
       - name: Build firmware (${{ matrix.target }})
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.5
           target: ${{ matrix.target }}
-          command: idf.py build && idf.py merge-bin -o ulani-${{ matrix.target }}-merged.bin
+          command: >-
+            ULANI_FW_VERSION='${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}'
+            idf.py build &&
+            idf.py merge-bin -o ulani-${{ matrix.target }}-merged.bin
 
       # Both targets emit an identically-named ulani_esp32.bin, so stamp the
       # chip into every filename. The merged image is the only thing a user

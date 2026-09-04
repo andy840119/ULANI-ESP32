@@ -100,6 +100,7 @@ const post = (path: string, payload?: unknown) =>
 
 export const api = {
   status: () => request<Status>('/api/status'),
+  version: () => request<{ version: string; production: boolean }>('/api/version'),
   devices: () => request<{ devices: Device[] }>('/api/devices'),
   scan: (durationMs = 8000) => post('/api/scan', { durationMs }),
   connect: (address: string) => post('/api/connect', { address }),

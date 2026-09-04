@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 
@@ -100,6 +101,22 @@ static void add_device_array(cJSON *root, const char *key)
 }
 
 /* ------------------------------------------------------------- endpoints */
+
+static esp_err_t get_version(httpd_req_t *req)
+{
+    /*
+     * The version is baked in at build time (PROJECT_VER, from the release
+     * tag). "dev" means an untagged local build; anything else is a tagged,
+     * production build. Static, so the UI fetches it once rather than polling.
+     */
+    const char *ver = esp_app_get_description()->version;
+    bool production = strcmp(ver, "dev") != 0 && ver[0] != '\0';
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "version", ver);
+    cJSON_AddBoolToObject(root, "production", production);
+    return send_json(req, root);
+}
 
 static esp_err_t get_status(httpd_req_t *req)
 {
@@ -597,6 +614,7 @@ esp_err_t web_server_start(void)
         { .uri = "/app.js",            .method = HTTP_GET,  .handler = get_app_js },
         { .uri = "/app.css",           .method = HTTP_GET,  .handler = get_app_css },
         { .uri = "/api/status",        .method = HTTP_GET,  .handler = get_status },
+        { .uri = "/api/version",       .method = HTTP_GET,  .handler = get_version },
         { .uri = "/api/devices",       .method = HTTP_GET,  .handler = get_devices },
         { .uri = "/api/scan",          .method = HTTP_POST, .handler = post_scan },
         { .uri = "/api/connect",       .method = HTTP_POST, .handler = post_connect },

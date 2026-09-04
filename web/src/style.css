@@ -212,6 +212,16 @@ footer {
   text-align: center;
 }
 
+footer .version {
+  margin-top: 0.25rem;
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+
+footer .version:empty {
+  display: none;
+}
+
 .notice {
   margin: 0 0 1rem;
   padding: 0.75rem;

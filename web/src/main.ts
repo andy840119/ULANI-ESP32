@@ -181,6 +181,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 
   <footer>
     <p>圖片上傳與 dither 設定將在下一階段加入。</p>
+    <p class="version" id="fw-version"></p>
   </footer>
 `;
 
@@ -564,5 +565,21 @@ async function poll() {
   }
   setTimeout(poll, 2000);
 }
+
+/*
+ * The firmware version is baked in at build time and never changes while the
+ * board runs, so fetch it once and drop it in the footer. "dev" (an untagged
+ * local build) is shown as such; a real version marks a production build.
+ */
+api
+  .version()
+  .then((v) => {
+    $('#fw-version').textContent = v.production
+      ? `韌體版本 ${v.version}`
+      : `開發版（${v.version}）`;
+  })
+  .catch(() => {
+    /* Old firmware without /api/version, or offline: leave the line blank. */
+  });
 
 poll();
