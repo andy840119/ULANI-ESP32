@@ -4,4 +4,4 @@ idf_component_register(
          "src/page_badge.c"
     INCLUDE_DIRS "include"
     REQUIRES ulani_ble ulani_store
-    PRIV_REQUIRES esp_timer esp_hw_support nvs_flash net_provision)
+    PRIV_REQUIRES esp_timer esp_hw_support nvs_flash net_provision status_led)

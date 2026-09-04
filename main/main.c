@@ -13,6 +13,7 @@
 #include "nvs_flash.h"
 
 #include "net_provision.h"
+#include "status_led.h"
 #include "tesserae.h"
 #include "ulani_app.h"
 #include "ulani_store.h"
@@ -54,6 +55,11 @@ void app_main(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+
+    /* Cosmetic, so a failure here should not stop the board coming up. */
+    if (status_led_init() != ESP_OK) {
+        ESP_LOGW(TAG, "status LED init failed; carrying on without it");
+    }
 
     char ssid[32];
     build_ssid(ssid, sizeof(ssid));

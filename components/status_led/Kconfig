@@ -1,0 +1,47 @@
+menu "ULANI status LED"
+
+config ULANI_STATUS_LED_ENABLE
+    bool "Enable the status LED"
+    default y
+    help
+        Drives an on-board LED as a status light: off when idle, solid while
+        talking to a Tesserae server, and blinking while streaming a frame to
+        the calendar over BLE. Turn this off to leave the pin alone.
+
+choice ULANI_BOARD
+    prompt "Board preset (sets the LED pin)"
+    depends on ULANI_STATUS_LED_ENABLE
+    default ULANI_BOARD_C3_SUPERMINI
+    help
+        ESP-IDF has no built-in board database (unlike Zephyr's devicetree), so
+        the LED pin is chosen here. Pick your board for sensible defaults, or
+        Custom to set the pin and polarity by hand. Add a new board by adding a
+        preset below and giving it defaults on the two options that follow.
+
+config ULANI_BOARD_C3_SUPERMINI
+    bool "ESP32-C3 Super Mini (blue LED on GPIO8, active-low)"
+
+config ULANI_BOARD_CUSTOM
+    bool "Custom"
+
+endchoice
+
+config ULANI_STATUS_LED_GPIO
+    int "Status LED GPIO number"
+    depends on ULANI_STATUS_LED_ENABLE
+    default 8 if ULANI_BOARD_C3_SUPERMINI
+    default 8 if ULANI_BOARD_CUSTOM
+    range 0 48
+    help
+        The GPIO the status LED is wired to.
+
+config ULANI_STATUS_LED_ACTIVE_LOW
+    bool "LED is active-low (lit when the pin is driven low)"
+    depends on ULANI_STATUS_LED_ENABLE
+    default y if ULANI_BOARD_C3_SUPERMINI
+    default n if ULANI_BOARD_CUSTOM
+    help
+        The C3 Super Mini's blue LED lights when GPIO8 is pulled low, so it is
+        active-low. Most discrete "wire an LED to a pin" designs are active-high.
+
+endmenu

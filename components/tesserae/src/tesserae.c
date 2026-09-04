@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 
+#include "status_led.h"
 #include "tesserae.h"
 #include "ulani_store.h"
 
@@ -802,7 +803,16 @@ static void tesserae_task(void *param)
         for (int i = 0; i < TESSERAE_CLIENTS; i++) {
             client_t *c = &s.client[i];
             if (c->due_us <= now) {
+                /* Solid LED while a configured client is talking to its server;
+                 * an unconfigured slot does no network, so skip the flicker. */
+                bool lit = c->server_url[0] != 0;
+                if (lit) {
+                    status_led_set(STATUS_LED_FETCH, true);
+                }
                 service(c);
+                if (lit) {
+                    status_led_set(STATUS_LED_FETCH, false);
+                }
                 now = esp_timer_get_time();
             }
             if (c->due_us < soonest) {

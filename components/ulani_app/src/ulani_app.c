@@ -11,6 +11,7 @@
 #include "nvs.h"
 
 #include "net_provision.h"
+#include "status_led.h"
 #include "ulani_app.h"
 
 static const char *TAG = "ulani_app";
@@ -500,7 +501,9 @@ static void handle_cmd(const cmd_t *cmd)
         ESP_LOGI(TAG, "sending stored image to slot %u%s", cmd->slot,
                  (out.read != src.read) ? " (badged)" : "");
         net_power_boost(true);
+        status_led_set(STATUS_LED_UPLOAD, true);
         err = ulani_ble_send_image(cmd->slot, &out);
+        status_led_set(STATUS_LED_UPLOAD, false);
         net_power_boost(false);
         ulani_store_reader_close(&reader);
 
@@ -554,7 +557,9 @@ static void handle_cmd(const cmd_t *cmd)
                  cmd->slot, (unsigned)cmd->arg,
                  cmd->activate ? "activating" : "leaving the display alone");
         net_power_boost(true);
+        status_led_set(STATUS_LED_UPLOAD, true);
         err = ulani_ble_send_image(cmd->slot, &src);
+        status_led_set(STATUS_LED_UPLOAD, false);
         net_power_boost(false);
         if (err != ESP_OK) {
             set_error("send image", err);
