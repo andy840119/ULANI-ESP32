@@ -138,8 +138,8 @@ function describeNext(c: TesseraeClient): string {
   return `${(s / 3600).toFixed(1)} 小時後`;
 }
 
-function describeLast(epoch: number): string {
-  if (!epoch) return '尚未收到';
+function describeLast(epoch: number, hasFrame: boolean): string {
+  if (!epoch) return hasFrame ? '時間未知' : '尚未收到';
   const d = new Date(epoch * 1000);
   return d.toLocaleString([], {
     month: 'numeric',
@@ -184,7 +184,7 @@ function renderClient(c: TesseraeClient) {
   }
 
   $(`#tc-state-${n}`).textContent = STATE_LABEL[c.state] ?? c.state;
-  $(`#tc-last-${n}`).textContent = describeLast(c.lastFrameEpoch);
+  $(`#tc-last-${n}`).textContent = describeLast(c.lastFrameEpoch, c.hasFrame);
 
   $<HTMLDivElement>(`#tc-next-row-${n}`).hidden = !c.registered;
   $(`#tc-next-${n}`).textContent = describeNext(c);

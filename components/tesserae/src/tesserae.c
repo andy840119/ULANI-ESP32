@@ -146,7 +146,9 @@ static int64_t parse_http_date(const char *d)
     unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     int64_t days = (int64_t)era * 146097 + (int64_t)doe - 719468;
 
-    return days * 86400 + hh * 3600 + mm * 60 + ss;
+    int64_t epoch = days * 86400 + hh * 3600 + mm * 60 + ss;
+    /* Sanity: anything before ~2017 is a misparse, not a real clock. */
+    return epoch > 1500000000 ? epoch : 0;
 }
 
 static void note_wall_clock(const char *date_hdr)
@@ -206,6 +208,9 @@ static void config_load(client_t *c)
     mkkey(k, sizeof(k), "etag", c->slot);
     n = sizeof(c->etag);
     nvs_get_str(h, k, c->etag, &n);
+    /* So "last got an image" is a real time even after a reboot. */
+    mkkey(k, sizeof(k), "fe", c->slot);
+    nvs_get_u32(h, k, &c->last_frame_epoch);
     nvs_close(h);
 }
 
@@ -221,6 +226,7 @@ static void config_save(client_t *c)
     mkkey(k, sizeof(k), "token", c->slot); nvs_set_str(h, k, c->token);
     mkkey(k, sizeof(k), "devid", c->slot); nvs_set_str(h, k, c->device_id);
     mkkey(k, sizeof(k), "etag", c->slot);  nvs_set_str(h, k, c->etag);
+    mkkey(k, sizeof(k), "fe", c->slot);    nvs_set_u32(h, k, c->last_frame_epoch);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -237,6 +243,7 @@ static void config_erase(client_t *c)
     mkkey(k, sizeof(k), "token", c->slot); nvs_erase_key(h, k);
     mkkey(k, sizeof(k), "devid", c->slot); nvs_erase_key(h, k);
     mkkey(k, sizeof(k), "etag", c->slot);  nvs_erase_key(h, k);
+    mkkey(k, sizeof(k), "fe", c->slot);    nvs_erase_key(h, k);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -251,17 +258,57 @@ static void mac_string(char *out, size_t len)
 
 /* ------------------------------------------------------------------ http */
 
+/*
+ * Response headers arrive through the event handler, not esp_http_client_get_
+ * header: that reliably returns only headers we set on the request, so the
+ * server's Date -- the only clock this device has -- would never be seen. The
+ * reference firmware reads all three (Date, ETag, Retry-After) the same way.
+ */
+typedef struct {
+    char  *etag;     /* where to copy the ETag, or NULL */
+    size_t etag_len;
+} hdr_ctx_t;
+
+static esp_err_t header_evt(esp_http_client_event_t *e)
+{
+    if (e->event_id != HTTP_EVENT_ON_HEADER) {
+        return ESP_OK;
+    }
+    if (strcasecmp(e->header_key, "Date") == 0) {
+        note_wall_clock(e->header_value);
+        return ESP_OK;
+    }
+    hdr_ctx_t *h = e->user_data;
+    if (h && h->etag && strcasecmp(e->header_key, "ETag") == 0) {
+        const char *v = e->header_value;
+        size_t n = strlen(v);
+        if (n >= 2 && v[0] == '"' && v[n - 1] == '"') { /* servers quote it */
+            v++;
+            n -= 2;
+        }
+        if (n >= h->etag_len) {
+            n = h->etag_len - 1;
+        }
+        memcpy(h->etag, v, n);
+        h->etag[n] = 0;
+    }
+    return ESP_OK;
+}
+
 /* Performs a request and returns the body. Caller frees. NULL on transport error. */
 static char *http_json(esp_http_client_method_t method, const char *url,
                        const char *body, const char *auth, const char *code,
                        const char *if_none_match, int *out_status,
                        char *out_etag, size_t etag_len)
 {
+    hdr_ctx_t ctx = { .etag = out_etag, .etag_len = etag_len };
     esp_http_client_config_t cfg = {
         .url             = url,
         .method          = method,
         .timeout_ms      = HTTP_TIMEOUT_MS,
         .disable_auto_redirect = false,
+        .event_handler   = header_evt,
+        .user_data       = &ctx,
     };
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     if (!cli) {
@@ -295,29 +342,8 @@ static char *http_json(esp_http_client_method_t method, const char *url,
         return NULL;
     }
 
-    int64_t content = esp_http_client_fetch_headers(cli);
+    int64_t content = esp_http_client_fetch_headers(cli); /* fires header_evt */
     *out_status = esp_http_client_get_status_code(cli);
-
-    char *dv = NULL;
-    if (esp_http_client_get_header(cli, "Date", &dv) == ESP_OK) {
-        note_wall_clock(dv);
-    }
-
-    if (out_etag && etag_len) {
-        char *value = NULL;
-        if (esp_http_client_get_header(cli, "ETag", &value) == ESP_OK && value) {
-            /* Servers quote ETags; the header we send back adds them again. */
-            const char *p = value;
-            size_t n = strlen(p);
-            if (n >= 2 && p[0] == '"' && p[n - 1] == '"') {
-                n -= 2;
-                p++;
-            }
-            if (n >= etag_len) n = etag_len - 1;
-            memcpy(out_etag, p, n);
-            out_etag[n] = 0;
-        }
-    }
 
     size_t cap = (content > 0 && content < 4096) ? (size_t)content + 1 : 4096;
     char  *buf = calloc(1, cap);
@@ -513,9 +539,10 @@ static int32_t post_status(client_t *c)
 static bool fetch_frame_body(client_t *c, const char *url, bool with_auth)
 {
     esp_http_client_config_t cfg = {
-        .url        = url,
-        .method     = HTTP_METHOD_GET,
-        .timeout_ms = FRAME_TIMEOUT_MS,
+        .url           = url,
+        .method        = HTTP_METHOD_GET,
+        .timeout_ms    = FRAME_TIMEOUT_MS,
+        .event_handler = header_evt, /* for the Date header; no ETag wanted here */
     };
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     if (!cli) {
@@ -543,13 +570,8 @@ static bool fetch_frame_body(client_t *c, const char *url, bool with_auth)
         goto done;
     }
 
-    int64_t total = esp_http_client_fetch_headers(cli);
+    int64_t total = esp_http_client_fetch_headers(cli); /* fires header_evt */
     int status = esp_http_client_get_status_code(cli);
-
-    char *dv = NULL;
-    if (esp_http_client_get_header(cli, "Date", &dv) == ESP_OK) {
-        note_wall_clock(dv);
-    }
 
     if (status != 200) {
         ESP_LOGW(TAG, "slot %u: frame body HTTP %d from %s", c->slot, status, url);
