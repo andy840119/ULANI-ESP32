@@ -51,8 +51,9 @@ jobs:
           command: idf.py build && idf.py merge-bin -o ulani-${{ matrix.target }}-merged.bin
 
       # Both targets emit an identically-named ulani_esp32.bin, so stamp the
-      # chip into every filename before they meet on the same release.
-      - name: Collect the flashable binaries
+      # chip into every filename. The merged image is the only thing a user
+      # needs; the separate pieces ride along as run artifacts for debugging.
+      - name: Collect the binaries
         run: |
           mkdir -p dist
           T=${{ matrix.target }}
@@ -63,16 +64,19 @@ jobs:
           cp build/flasher_args.json                    dist/flasher_args-$T.json
           ls -l dist
 
-      # Always available from the run page, even for an untagged manual build.
+      # The full set, for debugging a build; available from the run page even
+      # for an untagged manual dispatch. Not what users flash.
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ulani-${{ matrix.target }}-firmware
           path: dist/*
 
+      # The release carries only the one file a user flashes: the merged image
+      # (bootloader + partition table + app) that goes to offset 0x0.
       - name: Publish to the release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: dist/ulani-${{ matrix.target }}-merged.bin
           fail_on_unmatched_files: true
