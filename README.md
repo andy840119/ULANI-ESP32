@@ -28,7 +28,16 @@ idf.py build
 idf.py -p COM<n> flash monitor
 ```
 
-改前端後重跑 `tools/build_web.py` 再 `idf.py build` 即可。
+改前端後重跑 `tools/build_web.py` 再 `idf.py build` 即可。要編 S3 版就把
+`set-target` 換成 `esp32s3`——原始碼沒有綁定晶片，兩種都能編。
+
+## 安裝（不編譯）
+
+只是想燒錄、不想裝 esp-idf，可以用桌機版 Chrome / Edge 從瀏覽器刷機：到
+[Releases](https://github.com/andy840119/ULANI-ESP32/releases) 依你的晶片抓
+`ulani-esp32c3-merged.bin` 或 `ulani-esp32s3-merged.bin`，照
+[docs/flashing.md](docs/flashing.md) 的步驟走即可。發布 Release 的版號規則見
+[docs/releasing.md](docs/releasing.md)。
 
 ## 使用
 
