@@ -114,6 +114,7 @@ export const api = {
   }) => post('/api/tesserae/connect', opts),
   tesseraePoll: (slot: number) => post('/api/tesserae/poll', { slot }),
   tesseraeForget: (slot: number) => post('/api/tesserae/forget', { slot }),
+  sendSlot: (slot: number) => post('/api/slot/send', { slot }),
 
   async slotImage(slot: number): Promise<Uint8Array> {
     const res = await fetch(`/api/slot/download?slot=${slot}`);

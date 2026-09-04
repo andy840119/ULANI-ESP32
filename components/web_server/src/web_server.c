@@ -366,6 +366,18 @@ static esp_err_t post_tesserae_poll(httpd_req_t *req)
     return send_ok(req);
 }
 
+/* Sends the image already stored for a slot to the calendar over BLE. */
+static esp_err_t post_slot_send(httpd_req_t *req)
+{
+    uint8_t slot = body_slot(req);
+    if (slot == 0) {
+        return send_err(req, "400 Bad Request", "slot must be 1..4");
+    }
+    return ulani_app_cmd_send_slot(slot) == ESP_OK
+               ? send_ok(req)
+               : send_err(req, "503 Service Unavailable", "busy");
+}
+
 /*
  * Streams a stored slot back as raw packed nibbles, so the tab can render a
  * preview of what a page currently holds -- the only copy of a Tesserae frame
@@ -524,7 +536,7 @@ static esp_err_t redirect_to_root(httpd_req_t *req, httpd_err_code_t err)
 esp_err_t web_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 30;
+    cfg.max_uri_handlers = 31;
     cfg.lru_purge_enable = true;
     cfg.stack_size       = 6144;
     /*
@@ -559,6 +571,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/tesserae/forget",  .method = HTTP_POST, .handler = post_tesserae_forget },
         { .uri = "/api/tesserae/poll",    .method = HTTP_POST, .handler = post_tesserae_poll },
         { .uri = "/api/slot/download", .method = HTTP_GET,  .handler = get_slot_download },
+        { .uri = "/api/slot/send",     .method = HTTP_POST, .handler = post_slot_send },
         { .uri = "/api/wifi",          .method = HTTP_GET,  .handler = get_wifi },
         { .uri = "/api/wifi/scan",     .method = HTTP_POST, .handler = post_wifi_scan },
         { .uri = "/api/wifi/connect",  .method = HTTP_POST, .handler = post_wifi_connect },

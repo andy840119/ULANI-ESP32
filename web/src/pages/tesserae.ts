@@ -42,11 +42,16 @@ function clientCard(slot: number): string {
         <span class="placeholder">尚未收到圖片</span>
       </div>
 
-      <div class="row"><span>上次更新</span><strong id="tc-last-${slot}">—</strong></div>
+      <div class="row"><span>上次拿到圖片</span><strong id="tc-last-${slot}">—</strong></div>
       <div class="row" id="tc-next-row-${slot}" hidden>
-        <span>下次更新</span><strong id="tc-next-${slot}">—</strong>
+        <span>下次向 tesserae 詢問</span><strong id="tc-next-${slot}">—</strong>
       </div>
       <p class="error" id="tc-error-${slot}" hidden></p>
+
+      <div class="actions">
+        <button type="button" class="tc-poll">從 tesserae 更新資料</button>
+        <button type="button" class="tc-send">把圖片送到 ULANI 電子日曆</button>
+      </div>
 
       <details class="tsettings" id="tc-settings-${slot}">
         <summary>設定這一頁的 server</summary>
@@ -77,7 +82,6 @@ function clientCard(slot: number): string {
           </details>
           <div class="actions">
             <button type="submit">儲存並連線</button>
-            <button type="button" class="ghost tc-poll">立即更新</button>
             <button type="button" class="ghost tc-forget">清除</button>
           </div>
         </form>
@@ -197,6 +201,9 @@ function renderClient(c: TesseraeClient) {
     if (ph) ph.textContent = c.hasFrame ? '已有圖片 · 點此預覽' : '尚未收到圖片';
   }
 
+  /* Nothing to send until a frame has been stored for this page. */
+  ($(`#tc-${n} .tc-send`) as HTMLButtonElement).disabled = !c.hasFrame;
+
   if (!filled.has(n) && c.serverUrl) {
     filled.add(n);
     input(n, 'tc-url').value = c.serverUrl;
@@ -247,6 +254,10 @@ export function mountTesserae(guard: (fn: () => Promise<unknown>) => void) {
 
     card.querySelector('.tc-poll')!.addEventListener('click', () =>
       guard(() => api.tesseraePoll(n)),
+    );
+
+    card.querySelector('.tc-send')!.addEventListener('click', () =>
+      guard(() => api.sendSlot(n)),
     );
 
     card.querySelector('.tc-forget')!.addEventListener('click', () =>
