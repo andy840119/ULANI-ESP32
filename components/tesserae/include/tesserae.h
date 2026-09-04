@@ -67,9 +67,14 @@ typedef struct {
     int32_t          next_poll_s;   /* cadence the server asked for */
     int32_t          seconds_until_poll;
     char             last_error[96];
-    /* Wall-clock unix time of the last frame handed to the calendar, from the
-     * server's HTTP Date header. 0 = none yet, or the clock is not known. */
+    /* Wall-clock unix times, from the server's HTTP Date header (0 = unknown):
+     *   last_check_epoch  when the server was last asked about this page
+     *   last_frame_epoch  when a *new* frame was last stored (a 304 does not count)
+     *   last_sent_epoch   when this page was last sent to the calendar over BLE
+     */
+    uint32_t         last_check_epoch;
     uint32_t         last_frame_epoch;
+    uint32_t         last_sent_epoch;
     /* Whether a frame is stored for this slot and can be previewed. */
     bool             has_frame;
 } tesserae_status_t;
@@ -102,6 +107,13 @@ esp_err_t tesserae_forget(uint8_t slot);
 
 /* Asks one client for a frame now instead of waiting out its interval. */
 esp_err_t tesserae_poll_now(uint8_t slot);
+
+/*
+ * Records that this slot's image was just sent to the calendar. Called from
+ * the send-completion path, so "last sent" reflects a real BLE success rather
+ * than the moment a frame was queued.
+ */
+void tesserae_note_sent(uint8_t slot);
 
 void tesserae_get_status(uint8_t slot, tesserae_status_t *out);
 

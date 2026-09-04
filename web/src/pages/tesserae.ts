@@ -42,7 +42,11 @@ function clientCard(slot: number): string {
         <span class="placeholder">尚未收到圖片</span>
       </div>
 
-      <div class="row"><span>上次拿到圖片</span><strong id="tc-last-${slot}">—</strong></div>
+      <div class="row"><span>拿到新圖片時間</span><strong id="tc-last-${slot}">—</strong></div>
+      <div class="row"><span>上次送出時間</span><strong id="tc-sent-${slot}">—</strong></div>
+      <div class="row" id="tc-check-row-${slot}" hidden>
+        <span>上次檢查時間</span><strong id="tc-check-${slot}">—</strong>
+      </div>
       <div class="row" id="tc-next-row-${slot}" hidden>
         <span>下次向 tesserae 詢問</span><strong id="tc-next-${slot}">—</strong>
       </div>
@@ -138,15 +142,18 @@ function describeNext(c: TesseraeClient): string {
   return `${(s / 3600).toFixed(1)} 小時後`;
 }
 
-function describeLast(epoch: number, hasFrame: boolean): string {
-  if (!epoch) return hasFrame ? '時間未知' : '尚未收到';
-  const d = new Date(epoch * 1000);
-  return d.toLocaleString([], {
+function fmtTime(epoch: number): string {
+  return new Date(epoch * 1000).toLocaleString([], {
     month: 'numeric',
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function describeLast(epoch: number, hasFrame: boolean): string {
+  if (!epoch) return hasFrame ? '時間未知' : '尚未收到';
+  return fmtTime(epoch);
 }
 
 /* Slots whose form has been pre-filled once, so polling never clobbers typing. */
@@ -185,6 +192,10 @@ function renderClient(c: TesseraeClient) {
 
   $(`#tc-state-${n}`).textContent = STATE_LABEL[c.state] ?? c.state;
   $(`#tc-last-${n}`).textContent = describeLast(c.lastFrameEpoch, c.hasFrame);
+  $(`#tc-sent-${n}`).textContent = c.lastSentEpoch ? fmtTime(c.lastSentEpoch) : '尚未送出';
+
+  $<HTMLDivElement>(`#tc-check-row-${n}`).hidden = !c.registered;
+  $(`#tc-check-${n}`).textContent = c.lastCheckEpoch ? fmtTime(c.lastCheckEpoch) : '—';
 
   $<HTMLDivElement>(`#tc-next-row-${n}`).hidden = !c.registered;
   $(`#tc-next-${n}`).textContent = describeNext(c);

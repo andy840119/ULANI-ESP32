@@ -65,8 +65,10 @@ export interface TesseraeClient {
   registered: boolean;
   nextPollS: number;
   secondsUntilPoll: number;
-  /* Unix seconds of the last stored frame, from the server's clock. 0 = none. */
+  /* Unix seconds, from the server's clock. 0 = unknown / not yet. */
+  lastCheckEpoch: number;
   lastFrameEpoch: number;
+  lastSentEpoch: number;
   /* A frame is stored for this slot and can be previewed. */
   hasFrame: boolean;
   error: string;

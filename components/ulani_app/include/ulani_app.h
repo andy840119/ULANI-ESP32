@@ -63,6 +63,13 @@ typedef struct {
 
 esp_err_t ulani_app_start(void);
 
+/*
+ * Notified after a stored-slot send finishes, with whether it reached the
+ * calendar. Lets a higher layer stamp "last sent" on a real BLE success
+ * rather than on the moment the send was queued. Runs on the app task.
+ */
+void ulani_app_set_slot_sent_cb(void (*cb)(uint8_t slot, bool ok));
+
 void ulani_app_get_status(ulani_app_status_t *out);
 size_t ulani_app_get_devices(ulani_device_t *out, size_t max);
 

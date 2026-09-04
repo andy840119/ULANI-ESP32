@@ -64,7 +64,9 @@ typedef struct {
     char             last_error[96];
     int32_t          next_poll_s;
     int64_t          due_us;
+    uint32_t         last_check_epoch;
     uint32_t         last_frame_epoch;
+    uint32_t         last_sent_epoch;
 } client_t;
 
 static struct {
@@ -208,9 +210,11 @@ static void config_load(client_t *c)
     mkkey(k, sizeof(k), "etag", c->slot);
     n = sizeof(c->etag);
     nvs_get_str(h, k, c->etag, &n);
-    /* So "last got an image" is a real time even after a reboot. */
+    /* So these read as real times even after a reboot. */
     mkkey(k, sizeof(k), "fe", c->slot);
     nvs_get_u32(h, k, &c->last_frame_epoch);
+    mkkey(k, sizeof(k), "se", c->slot);
+    nvs_get_u32(h, k, &c->last_sent_epoch);
     nvs_close(h);
 }
 
@@ -227,6 +231,7 @@ static void config_save(client_t *c)
     mkkey(k, sizeof(k), "devid", c->slot); nvs_set_str(h, k, c->device_id);
     mkkey(k, sizeof(k), "etag", c->slot);  nvs_set_str(h, k, c->etag);
     mkkey(k, sizeof(k), "fe", c->slot);    nvs_set_u32(h, k, c->last_frame_epoch);
+    mkkey(k, sizeof(k), "se", c->slot);    nvs_set_u32(h, k, c->last_sent_epoch);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -244,6 +249,7 @@ static void config_erase(client_t *c)
     mkkey(k, sizeof(k), "devid", c->slot); nvs_erase_key(h, k);
     mkkey(k, sizeof(k), "etag", c->slot);  nvs_erase_key(h, k);
     mkkey(k, sizeof(k), "fe", c->slot);    nvs_erase_key(h, k);
+    mkkey(k, sizeof(k), "se", c->slot);    nvs_erase_key(h, k);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -762,6 +768,7 @@ static void service(client_t *c)
         return;
     }
 
+    c->last_check_epoch = now_epoch();
     int32_t next  = post_status(c);
     bool    fresh = c->token[0] ? poll_frame(c) : false;
 
@@ -908,7 +915,9 @@ esp_err_t tesserae_forget(uint8_t slot)
     c->etag[0]          = 0;
     c->state            = TESSERAE_DISABLED;
     c->last_error[0]    = 0;
+    c->last_check_epoch = 0;
     c->last_frame_epoch = 0;
+    c->last_sent_epoch  = 0;
     unlock();
 
     c->due_us = 0;
@@ -935,6 +944,19 @@ esp_err_t tesserae_poll_now(uint8_t slot)
     return ESP_OK;
 }
 
+void tesserae_note_sent(uint8_t slot)
+{
+    client_t *c = client_for(slot);
+    if (!c) {
+        return;
+    }
+    uint32_t at = now_epoch(); /* takes the lock itself, so before ours */
+    lock();
+    c->last_sent_epoch = at;
+    unlock();
+    config_save(c);
+}
+
 void tesserae_get_status(uint8_t slot, tesserae_status_t *out)
 {
     memset(out, 0, sizeof(*out));
@@ -951,7 +973,9 @@ void tesserae_get_status(uint8_t slot, tesserae_status_t *out)
     out->state       = c->state;
     out->registered  = (c->token[0] != 0);
     out->next_poll_s = c->next_poll_s;
+    out->last_check_epoch = c->last_check_epoch;
     out->last_frame_epoch = c->last_frame_epoch;
+    out->last_sent_epoch  = c->last_sent_epoch;
     strlcpy(out->server_url, c->server_url, sizeof(out->server_url));
     strlcpy(out->device_id, c->device_id, sizeof(out->device_id));
     strlcpy(out->last_error, c->last_error, sizeof(out->last_error));

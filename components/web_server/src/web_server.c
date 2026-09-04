@@ -275,7 +275,9 @@ static void add_tesserae_client(cJSON *arr, uint8_t slot)
     cJSON_AddBoolToObject(o, "registered", st.registered);
     cJSON_AddNumberToObject(o, "nextPollS", st.next_poll_s);
     cJSON_AddNumberToObject(o, "secondsUntilPoll", st.seconds_until_poll);
+    cJSON_AddNumberToObject(o, "lastCheckEpoch", st.last_check_epoch);
     cJSON_AddNumberToObject(o, "lastFrameEpoch", st.last_frame_epoch);
+    cJSON_AddNumberToObject(o, "lastSentEpoch", st.last_sent_epoch);
     cJSON_AddBoolToObject(o, "hasFrame", st.has_frame);
     cJSON_AddStringToObject(o, "error", st.last_error);
     cJSON_AddItemToArray(arr, o);

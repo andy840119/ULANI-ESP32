@@ -65,6 +65,8 @@ static struct {
     ulani_device_t saved;        /* remembered device, addr empty if none */
     bool           auto_connect; /* armed: keep trying to reach `saved` */
     int64_t        next_auto_us;
+
+    void (*slot_sent_cb)(uint8_t slot, bool ok);
 } a;
 
 static void status_lock(void)   { xSemaphoreTake(a.lock, portMAX_DELAY); }
@@ -445,6 +447,9 @@ static void handle_cmd(const cmd_t *cmd)
                 ulani_ble_set_active_slot(cmd->slot);
             }
         }
+        if (a.slot_sent_cb) {
+            a.slot_sent_cb(cmd->slot, err == ESP_OK);
+        }
         a.last_op_us = esp_timer_get_time();
         break;
     }
@@ -595,6 +600,11 @@ static void worker_task(void *param)
 }
 
 /* ------------------------------------------------------------ public API */
+
+void ulani_app_set_slot_sent_cb(void (*cb)(uint8_t slot, bool ok))
+{
+    a.slot_sent_cb = cb;
+}
 
 esp_err_t ulani_app_start(void)
 {

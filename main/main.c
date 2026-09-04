@@ -38,6 +38,14 @@ static void on_tesserae_frame(uint8_t slot, void *user)
     ulani_app_cmd_send_slot(slot);
 }
 
+/* A stored-slot send finished; if it reached the panel, record when. */
+static void on_slot_sent(uint8_t slot, bool ok)
+{
+    if (ok) {
+        tesserae_note_sent(slot);
+    }
+}
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -74,6 +82,9 @@ void app_main(void)
      */
     tesserae_cfg_t tess = { .on_frame = on_tesserae_frame };
     ESP_ERROR_CHECK(tesserae_start(&tess));
+
+    /* Route send completions to the matching Tesserae client's "last sent". */
+    ulani_app_set_slot_sent_cb(on_slot_sent);
 
     ESP_ERROR_CHECK(web_server_start());
 
