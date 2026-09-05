@@ -24,9 +24,18 @@
   box-sizing: border-box;
 }
 
+/*
+ * The hidden attribute must win over any explicit display (flex/inline-flex),
+ * or a toggled-off row/ring keeps showing. UA [hidden]{display:none} loses to
+ * an author display rule without this.
+ */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
-  padding: 1rem;
+  padding: 0 1rem 1rem;
   background: var(--bg);
   color: var(--ink);
   font: 16px/1.6 system-ui, -apple-system, 'Noto Sans TC', sans-serif;
@@ -37,19 +46,125 @@ body {
   margin: 0 auto;
 }
 
-header {
-  padding: 0.5rem 0 1rem;
-}
-
 h1 {
   margin: 0;
   font-size: 1.4rem;
 }
 
-.sub {
-  margin: 0.2rem 0 0;
+/* Sticky status bar: stays put while the cards scroll under it. */
+.appbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0;
+  margin-bottom: 0.75rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.appbar h1 {
+  flex: none;
+  font-size: 1.15rem;
+}
+
+/* The status cluster on the right. Named, not .bar -- that class is a progress
+ * bar elsewhere (height:8px), which squashed this when it shared the name. */
+.appbar-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0; /* let the name shrink and ellipsis instead of overflowing */
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
+}
+
+/* The device name is the only part allowed to shrink; everything else keeps
+ * its size, so a long name truncates rather than shoving the rings around. */
+#bar-device {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ringwrap,
+.iconbtn,
+#bar-connect,
+.dot {
+  flex: none;
+}
+
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.dot.on {
+  background: var(--accent);
+}
+
+.ringwrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ring {
+  flex: none;
+  position: relative;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: conic-gradient(var(--rc, var(--accent)) calc(var(--p, 0) * 1%),
+                             var(--line) 0);
+}
+
+.ring::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--bg);
+}
+
+.mini {
+  padding: 0.2rem 0.6rem !important;
+  font-size: 0.8rem;
+}
+
+.iconbtn {
+  flex: none;
+  padding: 0.15rem 0.35rem !important;
+  border: none !important;
+  background: none !important;
+  color: var(--muted) !important;
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.iconbtn.active,
+.iconbtn:hover {
+  color: var(--accent) !important;
 }
 
 .card {
@@ -460,6 +575,18 @@ button.tc-toggle h3 {
 /* A collapsed client is just its header, so drop the header's bottom gap. */
 .tclient:not(.open) .slot-head {
   margin-bottom: 0;
+}
+
+/*
+ * No calendar linked: mute the informational parts of the card so it reads as
+ * "not ready", but leave the actions (the send button auto-connects) and the
+ * settings form fully usable.
+ */
+.tclient.no-calendar .preview,
+.tclient.no-calendar .row,
+.tclient.no-calendar > .tclient-body > .toggle,
+.tclient.no-calendar > .tclient-body > .hint {
+  opacity: 0.5;
 }
 
 .tag {

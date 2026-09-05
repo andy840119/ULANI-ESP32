@@ -48,12 +48,12 @@ function clientCard(slot: number): string {
         <span>上次檢查時間</span><strong id="tc-check-${slot}">—</strong>
       </div>
       <div class="row" id="tc-next-row-${slot}" hidden>
-        <span>下次向 tesserae 詢問</span><strong id="tc-next-${slot}">—</strong>
+        <span>下次向 Tesserae 詢問</span><strong id="tc-next-${slot}">—</strong>
       </div>
       <p class="error" id="tc-error-${slot}" hidden></p>
 
       <div class="actions">
-        <button type="button" class="tc-poll">從 tesserae 更新資料</button>
+        <button type="button" class="tc-poll">從 Tesserae 更新資料</button>
         <button type="button" class="tc-send">把圖片送到 ULANI 電子日曆</button>
       </div>
 
@@ -103,9 +103,9 @@ function clientCard(slot: number): string {
 export function tesseraeMarkup(): string {
   return `
     <section class="card">
-      <h2>什麼是 tesserae</h2>
+      <h2>什麼是 Tesserae</h2>
       <p class="hint">
-        <a href="https://github.com/dmellok/tesserae">tesserae</a>
+        <a href="https://github.com/dmellok/tesserae">Tesserae</a>
         是一套可以自己架設的服務，負責產生日曆畫面。要顯示什麼、長什麼樣子、
         多久更新一次，全部在它的網頁上設定。這台 ESP32 只按它指定的時間去把畫好的
         圖拿回來、透過藍牙送進 ULANI，<strong>不做任何影像處理</strong>。
@@ -129,11 +129,16 @@ docker compose up -d</code></pre>
         Seeed XIAO ePaper EE04，不用手動選。
       </p>
       <p class="hint warn">
-        server 網址請填<strong>區網 IP</strong>，不要填外網網域——tesserae 預設只把
+        server 網址請填<strong>區網 IP</strong>，不要填外網網域——Tesserae 預設只把
         圖片給區網內的用戶端，用外網網域會註冊成功但下載圖片時被回 403。
         配對碼是一次性的，失敗就回去重按一次拿新的。
       </p>
     </section>
+
+    <p class="hint warn" id="tc-nocal" hidden>
+      目前沒有連上日曆。設定與「從 Tesserae 更新資料」都能照常使用；按「把圖片送到
+      ULANI 電子日曆」時，板子會先自動連上日曆再送出。
+    </p>
 
     ${SLOTS.map(clientCard).join('')}
   `;
@@ -234,8 +239,16 @@ function renderClient(c: TesseraeClient) {
   }
 }
 
-export function renderTesserae(clients: TesseraeClient[]) {
-  for (const c of clients) renderClient(c);
+export function renderTesserae(clients: TesseraeClient[], calendarConnected = false) {
+  /*
+   * When the calendar is not linked, the cards read as muted and the tab shows
+   * a note -- but sending stays enabled, because a send auto-connects first.
+   */
+  $<HTMLParagraphElement>('#tc-nocal').hidden = calendarConnected;
+  for (const c of clients) {
+    renderClient(c);
+    $(`#tc-${c.slot}`).classList.toggle('no-calendar', !calendarConnected);
+  }
 }
 
 function placeholder(text: string): HTMLElement {
