@@ -437,8 +437,16 @@ static char *identity_body(client_t *c)
     char devid[TESSERAE_ID_MAX];
     default_device_id(c->slot, devid, sizeof(devid));
 
-    char name[32];
-    snprintf(name, sizeof(name), "ULANI page %u", (unsigned)c->slot);
+    /*
+     * The board's own MAC, not this page's derived one: the name is there to
+     * say which calendar the card belongs to, and two boards on one server
+     * would otherwise both offer four cards called "ULANI page N".
+     */
+    char board[13];
+    mac_hex(ULANI_SLOT_MIN, board, sizeof(board));
+
+    char name[40];
+    snprintf(name, sizeof(name), "ULANI %s page %u", board, (unsigned)c->slot);
 
     cJSON *o = cJSON_CreateObject();
     /* The admin may have named the device; the derived id is only the
@@ -450,8 +458,8 @@ static char *identity_body(client_t *c)
     cJSON_AddNumberToObject(o, "panel_h", ULANI_IMG_H);
     cJSON_AddStringToObject(o, "fw_version", fw_version());
     cJSON_AddStringToObject(o, "mac", mac);
-    /* Only a suggestion for the Register card, but with four pages announcing
-     * at once the admin should not have to tell them apart by MAC. */
+    /* Only a suggestion for the Register card -- the admin's own name always
+     * wins, and a device already registered is never renamed by an announce. */
     cJSON_AddStringToObject(o, "name", name);
 
     char *str = cJSON_PrintUnformatted(o);
