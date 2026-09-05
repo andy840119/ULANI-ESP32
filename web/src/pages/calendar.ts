@@ -136,11 +136,11 @@ export function renderCalendar(st: Status) {
 
 export function mountCalendar() {
   // Scanning is asynchronous in the firmware; the status poll shows the results.
-  $('#btn-scan').addEventListener('click', () => guard(() => api.scan()));
+  $('#btn-scan').addEventListener('click', () => guard(() => api.calendar.scan()));
 
-  $('#btn-disconnect').addEventListener('click', () => guard(() => api.disconnect()));
+  $('#btn-disconnect').addEventListener('click', () => guard(() => api.calendar.disconnect()));
 
-  $('#btn-forget').addEventListener('click', () => guard(() => api.forgetDevice()));
+  $('#btn-forget').addEventListener('click', () => guard(() => api.calendar.forget()));
 
   // One image per transfer: the slot the user picks is the only one touched.
   $('#send-buttons').addEventListener('click', (ev) => {
@@ -148,18 +148,18 @@ export function mountCalendar() {
     if (!btn) return;
     const slot = Number(btn.dataset.send);
     const activate = $<HTMLInputElement>('#send-activate').checked;
-    guard(() => api.testImage(slot, Math.floor(Math.random() * 0xffffff) + 1, activate));
+    guard(() => api.calendar.testImage(slot, Math.floor(Math.random() * 0xffffff) + 1, activate));
   });
 
   $('#device-list').addEventListener('click', (ev) => {
     const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>('button[data-address]');
     if (!btn) return;
-    guard(() => api.connect(btn.dataset.address!));
+    guard(() => api.calendar.connect(btn.dataset.address!));
   });
 
   $('#slot-buttons').addEventListener('click', (ev) => {
     const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>('button[data-slot]');
     if (!btn) return;
-    guard(() => api.setSlot(Number(btn.dataset.slot)));
+    guard(() => api.calendar.setPage(Number(btn.dataset.slot)));
   });
 }

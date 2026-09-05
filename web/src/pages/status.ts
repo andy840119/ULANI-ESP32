@@ -155,7 +155,7 @@ export function renderStatus(st: Status) {
 export function mountStatus() {
   // Header quick-connect: reach for the remembered calendar without hunting.
   $('#bar-connect').addEventListener('click', () => {
-    if (savedAddress) guard(() => api.connect(savedAddress!));
+    if (savedAddress) guard(() => api.calendar.connect(savedAddress!));
   });
 }
 
