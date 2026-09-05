@@ -43,7 +43,7 @@ merged 檔一個就包含 bootloader、分割表與韌體，直接燒在位置 `
 ## 4. 完成後
 
 板子重開後會開一個熱點，用手機或電腦連進去、開 `http://192.168.4.1/` 就是操作
-介面。設定家裡 WiFi、連日曆的步驟都在網頁上（見 [README](../README.md)）。
+介面。設定家裡 WiFi、連日曆、接 Tesserae 的完整步驟見 [getting-started.md](getting-started.md)。
 
 > 韌體只是換掉程式本身。已經記住的日曆、WiFi、Tesserae 設定存在另一塊
 > 分割區（NVS / SPIFFS），刷新版不會被清掉。

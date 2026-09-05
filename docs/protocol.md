@@ -202,7 +202,7 @@ ATT server 被編譯掉，連帶失去接收 notification 的能力。症狀非�
 曾經和官方 App 配對過的日曆**會拒絕建立新的 bond**。症狀是掃描得到、連線也成功，
 但在收到我們的 Pairing Request 之後約 130 ms 就主動切斷連線（HCI reason 0x13,
 remote user terminated），連 Pairing Response 都不回。移除手機上的 App 沒有用，
-必須在日曆上回復出廠預設值（按著功能鍵戳重置孔，見 README）。
+必須在日曆上回復出廠預設值（按著功能鍵戳重置孔，見 getting-started.md）。
 
 回復出廠預設值之後，同一份韌體就能完成配對並訂閱 notify。
 
