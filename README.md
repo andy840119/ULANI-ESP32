@@ -1,7 +1,7 @@
 # ULANI-ESP32
 
 <p align="center">
-  <img src="docs/hero.svg" alt="一片 ESP32，讓 ULANI 日曆變成 Tesserae 底下的一台裝置：Tesserae 用 WiFi 抓圖、ESP32 用藍牙送進 ULANI 日曆" width="860">
+  <img src="docs/demo.jpg" alt="ULANI 日曆顯示 Tesserae 算好的日曆＋天氣 dashboard，背景是 Tesserae 網頁的 live preview" width="720">
 </p>
 
 相信有興趣進來看的人或多或少都會因為日曆有時候不更新，或是擔心到了新的一年後官方日曆主題就不再提供了。
@@ -31,6 +31,10 @@
 .
 
 ## 功能介紹
+
+<p align="center">
+  <img src="docs/hero.svg" alt="一片 ESP32，讓 ULANI 日曆變成 Tesserae 底下的一台裝置：Tesserae 用 WiFi 抓圖、ESP32 用藍牙送進 ULANI 日曆" width="860">
+</p>
 
 讓 [ULANI 電子日曆](https://www.ulani.com.tw/) 變成一台
 [Tesserae](https://tesserae.ink/) 底下的裝置。
