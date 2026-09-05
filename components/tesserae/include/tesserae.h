@@ -89,9 +89,25 @@ typedef struct {
  */
 typedef void (*tesserae_frame_cb_t)(uint8_t slot, void *user);
 
+/*
+ * Asked for the calendar's battery just before a heartbeat goes out. Returns
+ * false when there is nothing worth reporting -- never read, or the link has
+ * been down long enough that the number has gone stale -- and the field is
+ * then left out, which leaves Tesserae holding the last one it was given.
+ *
+ * Whatever comes back is reported as battery_pct, a percentage. **That the
+ * calendar's byte really is a percentage is not confirmed**; see the battery
+ * section of docs/protocol.md before trusting the number on the server.
+ *
+ * The client asks rather than being told so that only the layer that owns the
+ * BLE link decides what counts as a current reading.
+ */
+typedef bool (*tesserae_battery_cb_t)(uint8_t *pct, void *user);
+
 typedef struct {
-    tesserae_frame_cb_t on_frame;
-    void               *user;
+    tesserae_frame_cb_t   on_frame;
+    tesserae_battery_cb_t battery; /* optional; no battery is reported without it */
+    void                 *user;
 } tesserae_cfg_t;
 
 esp_err_t tesserae_start(const tesserae_cfg_t *cfg);

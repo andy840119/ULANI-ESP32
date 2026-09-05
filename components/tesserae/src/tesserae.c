@@ -85,8 +85,9 @@ static struct {
     SemaphoreHandle_t lock;
     SemaphoreHandle_t wake; /* interrupt the task's wait after a config change */
 
-    tesserae_frame_cb_t on_frame;
-    void               *user;
+    tesserae_frame_cb_t   on_frame;
+    tesserae_battery_cb_t battery;
+    void                 *user;
 
     client_t client[TESSERAE_CLIENTS];
 
@@ -583,10 +584,8 @@ static int32_t post_status(client_t *c)
     /*
      * The server merges each heartbeat into the last one, so only what is
      * actually known goes in -- an unknown field left out keeps the previous
-     * value, while a made-up one overwrites it. Nothing here measures a
-     * battery or the room, so battery_*, temperature_c and humidity_pct are
-     * never sent: the ESP32 is mains powered, and the calendar's own battery
-     * byte is on a scale nobody has confirmed yet (see docs/protocol.md).
+     * value, while a made-up one overwrites it. Nothing here measures the
+     * room, so temperature_c and humidity_pct are never sent.
      */
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "fw_version", fw_version());
@@ -605,6 +604,20 @@ static int32_t post_status(client_t *c)
         if (net.ip[0]) {
             cJSON_AddStringToObject(o, "ip", net.ip);
         }
+    }
+
+    /*
+     * The battery is the calendar's, not the board's -- the ESP32 runs off
+     * mains. It goes out as battery_pct because that is the field the device
+     * card, the history graph and the Home Assistant sensor read, but the
+     * scale of the byte behind it is unconfirmed (docs/protocol.md), so a low
+     * reading here is not yet evidence of a low battery. battery_mv is left
+     * out: there is no voltage to report, and inventing one would have the
+     * server derive a second, disagreeing percentage from it.
+     */
+    uint8_t pct = 0;
+    if (s.battery && s.battery(&pct, s.user) && pct <= 100) {
+        cJSON_AddNumberToObject(o, "battery_pct", pct);
     }
 
     /*
@@ -1000,6 +1013,7 @@ esp_err_t tesserae_start(const tesserae_cfg_t *cfg)
     }
     if (cfg) {
         s.on_frame = cfg->on_frame;
+        s.battery  = cfg->battery;
         s.user     = cfg->user;
     }
 

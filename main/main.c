@@ -39,6 +39,33 @@ static void on_tesserae_frame(uint8_t slot, void *user)
     ulani_app_cmd_send_slot(slot);
 }
 
+/*
+ * How old the calendar's battery reading may be and still be worth reporting.
+ * The board hands the link back when it is idle, so a reading is normally some
+ * minutes old by the time a heartbeat goes out; past this it says more about
+ * when the calendar was last reachable than about the battery, and leaving the
+ * field out lets Tesserae keep the last value it had.
+ */
+#define BATTERY_MAX_AGE_MS (30 * 60 * 1000)
+
+/*
+ * The battery Tesserae shows is the calendar's -- the ESP32 itself runs off
+ * mains. ulani_app owns the BLE link, so it is the one that knows whether the
+ * reading is current. What the calendar's byte actually means is still open;
+ * see the battery section of docs/protocol.md.
+ */
+static bool calendar_battery(uint8_t *pct, void *user)
+{
+    (void)user;
+    ulani_app_status_t st;
+    ulani_app_get_status(&st);
+    if (!st.battery_valid || st.battery_age_ms > BATTERY_MAX_AGE_MS) {
+        return false;
+    }
+    *pct = st.battery_level;
+    return true;
+}
+
 /* A stored-slot send finished; if it reached the panel, record when. */
 static void on_slot_sent(uint8_t slot, bool ok)
 {
@@ -86,7 +113,10 @@ void app_main(void)
      * takes it from here so the tesserae task is not held up by a BLE
      * transfer that runs for half a minute.
      */
-    tesserae_cfg_t tess = { .on_frame = on_tesserae_frame };
+    tesserae_cfg_t tess = {
+        .on_frame = on_tesserae_frame,
+        .battery  = calendar_battery,
+    };
     ESP_ERROR_CHECK(tesserae_start(&tess));
 
     /* Route send completions to the matching Tesserae client's "last sent". */
