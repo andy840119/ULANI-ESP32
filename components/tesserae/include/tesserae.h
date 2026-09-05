@@ -10,6 +10,10 @@
  * The calendar holds four pages, so there are four independent clients here,
  * client i feeding slot i+1. Each registers separately (its own server, token
  * and schedule), so four dashboards can drive the four pages of one calendar.
+ * Tesserae identifies a device by the MAC it announces, so each client also
+ * announces its own: the real station MAC for page 1 and a locally-
+ * administered variant of it for the rest, or the four would claim one
+ * another's token and collapse into a single device there (issue #48).
  * A single task services all four in turn -- the radio is shared and transfers
  * serialise through ulani_app anyway, so four tasks would only contend.
  *
