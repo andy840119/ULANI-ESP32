@@ -395,7 +395,17 @@ static void handle_cmd(const cmd_t *cmd)
         status_unlock();
         err = ulani_ble_connect(cmd->addr, 15000);
         if (err != ESP_OK) {
-            set_error("connect", err);
+            if (err == ESP_ERR_NOT_ALLOWED) {
+                /* Pairing was refused -- point the user at the factory reset. */
+                status_lock();
+                strlcpy(a.status.last_error,
+                        "pairing refused; factory-reset the calendar first",
+                        sizeof(a.status.last_error));
+                status_unlock();
+                ESP_LOGW(TAG, "connect: pairing refused by the calendar");
+            } else {
+                set_error("connect", err);
+            }
             break;
         }
 
