@@ -10,6 +10,11 @@
 #include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "mbedtls/base64.h"
+#include "nvs.h"
 
 #include "net_provision.h"
 #include "tesserae.h"
@@ -98,6 +103,203 @@ static void add_device_array(cJSON *root, const char *key)
         cJSON_AddNumberToObject(d, "rssi", devs[i].rssi);
         cJSON_AddItemToArray(arr, d);
     }
+}
+
+/* ------------------------------------------------------- settings backup */
+
+/*
+ * Everything the user configures lives in these NVS namespaces -- the
+ * remembered calendar, the WiFi credentials, the four Tesserae clients, and
+ * the NimBLE pairing bond. (The slot images are in SPIFFS and far too big to
+ * ship in a settings file; they come back from Tesserae or a re-upload.) A web
+ * flash writes the merged image from 0x0, and its padding runs straight over
+ * the NVS partition at 0x9000, so these are exactly what gets wiped -- hence
+ * export/import. Restoring nimble_bond means a reflash keeps the pairing, so
+ * the calendar does not have to be factory-reset afterwards. The bond is tied
+ * to this board's identity, so a backup only makes sense on the same board.
+ */
+static const char *BACKUP_NS[] = { "ulani_wifi", "tesserae", "ulani_dev",
+                                   "nimble_bond" };
+
+static void export_ns(cJSON *parent, const char *ns)
+{
+    cJSON *obj = cJSON_AddObjectToObject(parent, ns);
+
+    nvs_iterator_t it  = NULL;
+    esp_err_t      err = nvs_entry_find("nvs", ns, NVS_TYPE_ANY, &it);
+    while (err == ESP_OK) {
+        nvs_entry_info_t info;
+        nvs_entry_info(it, &info);
+
+        nvs_handle_t h;
+        if (nvs_open(ns, NVS_READONLY, &h) == ESP_OK) {
+            cJSON *e = cJSON_CreateObject();
+            if (info.type == NVS_TYPE_STR) {
+                size_t len = 0;
+                if (nvs_get_str(h, info.key, NULL, &len) == ESP_OK) {
+                    char *buf = malloc(len);
+                    if (buf && nvs_get_str(h, info.key, buf, &len) == ESP_OK) {
+                        cJSON_AddStringToObject(e, "t", "str");
+                        cJSON_AddStringToObject(e, "v", buf);
+                    }
+                    free(buf);
+                }
+            } else if (info.type == NVS_TYPE_U8) {
+                uint8_t v;
+                if (nvs_get_u8(h, info.key, &v) == ESP_OK) {
+                    cJSON_AddStringToObject(e, "t", "u8");
+                    cJSON_AddNumberToObject(e, "v", v);
+                }
+            } else if (info.type == NVS_TYPE_U32) {
+                uint32_t v;
+                if (nvs_get_u32(h, info.key, &v) == ESP_OK) {
+                    cJSON_AddStringToObject(e, "t", "u32");
+                    cJSON_AddNumberToObject(e, "v", v);
+                }
+            } else if (info.type == NVS_TYPE_BLOB) {
+                /* Bonds are blobs; base64 them so they fit in JSON. */
+                size_t len = 0;
+                if (nvs_get_blob(h, info.key, NULL, &len) == ESP_OK && len > 0) {
+                    uint8_t *raw = malloc(len);
+                    if (raw && nvs_get_blob(h, info.key, raw, &len) == ESP_OK) {
+                        size_t         cap = 4 * ((len + 2) / 3) + 1;
+                        unsigned char *b64 = malloc(cap);
+                        size_t         olen = 0;
+                        if (b64 && mbedtls_base64_encode(b64, cap, &olen, raw, len) == 0) {
+                            cJSON_AddStringToObject(e, "t", "blob");
+                            cJSON_AddStringToObject(e, "v", (char *)b64);
+                        }
+                        free(b64);
+                    }
+                    free(raw);
+                }
+            }
+            if (cJSON_GetObjectItem(e, "t")) {
+                cJSON_AddItemToObject(obj, info.key, e);
+            } else {
+                cJSON_Delete(e); /* a type we do not back up */
+            }
+            nvs_close(h);
+        }
+        err = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+}
+
+static esp_err_t get_settings_export(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "schema", 1);
+    cJSON_AddStringToObject(root, "version", esp_app_get_description()->version);
+    cJSON *ns = cJSON_AddObjectToObject(root, "nvs");
+    for (size_t i = 0; i < sizeof(BACKUP_NS) / sizeof(BACKUP_NS[0]); i++) {
+        export_ns(ns, BACKUP_NS[i]);
+    }
+
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       "attachment; filename=\"ulani-settings.json\"");
+    return send_json(req, root);
+}
+
+/* Writes one namespace back from its exported object. Returns keys restored. */
+static int import_ns(const char *ns, cJSON *obj)
+{
+    nvs_handle_t h;
+    if (nvs_open(ns, NVS_READWRITE, &h) != ESP_OK) {
+        return 0;
+    }
+
+    int    n = 0;
+    cJSON *e = NULL;
+    cJSON_ArrayForEach(e, obj) {
+        const char *key = e->string;
+        cJSON      *t   = cJSON_GetObjectItem(e, "t");
+        cJSON      *v   = cJSON_GetObjectItem(e, "v");
+        if (!key || !cJSON_IsString(t) || !v) {
+            continue;
+        }
+        const char *type = t->valuestring;
+        if (strcmp(type, "str") == 0 && cJSON_IsString(v)) {
+            if (nvs_set_str(h, key, v->valuestring) == ESP_OK) n++;
+        } else if (strcmp(type, "u8") == 0 && cJSON_IsNumber(v)) {
+            if (nvs_set_u8(h, key, (uint8_t)v->valuedouble) == ESP_OK) n++;
+        } else if (strcmp(type, "u32") == 0 && cJSON_IsNumber(v)) {
+            if (nvs_set_u32(h, key, (uint32_t)v->valuedouble) == ESP_OK) n++;
+        } else if (strcmp(type, "blob") == 0 && cJSON_IsString(v)) {
+            size_t   slen = strlen(v->valuestring);
+            size_t   cap  = (slen / 4) * 3 + 4;
+            uint8_t *raw  = malloc(cap);
+            size_t   olen = 0;
+            if (raw && mbedtls_base64_decode(raw, cap, &olen,
+                                             (const unsigned char *)v->valuestring,
+                                             slen) == 0) {
+                if (nvs_set_blob(h, key, raw, olen) == ESP_OK) n++;
+            }
+            free(raw);
+        }
+    }
+    nvs_commit(h);
+    nvs_close(h);
+    return n;
+}
+
+static void reboot_task(void *arg)
+{
+    (void)arg;
+    /* Let the HTTP response flush before the modules reload from NVS. */
+    vTaskDelay(pdMS_TO_TICKS(800));
+    esp_restart();
+}
+
+static esp_err_t post_settings_import(httpd_req_t *req)
+{
+    /* Bigger than read_json_body's cap: four Tesserae tokens add up. */
+    if (req->content_len <= 0 || req->content_len > 8192) {
+        return send_err(req, "400 Bad Request", "bad size");
+    }
+    char *buf = malloc(req->content_len + 1);
+    if (!buf) {
+        return send_err(req, "500 Internal Server Error", "out of memory");
+    }
+    int got = httpd_req_recv(req, buf, req->content_len);
+    if (got <= 0) {
+        free(buf);
+        return send_err(req, "400 Bad Request", "recv failed");
+    }
+    buf[got] = 0;
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) {
+        return send_err(req, "400 Bad Request", "invalid json");
+    }
+
+    cJSON *ns = cJSON_GetObjectItem(root, "nvs");
+    if (!cJSON_IsObject(ns)) {
+        cJSON_Delete(root);
+        return send_err(req, "400 Bad Request", "not a settings file");
+    }
+
+    int total = 0;
+    for (size_t i = 0; i < sizeof(BACKUP_NS) / sizeof(BACKUP_NS[0]); i++) {
+        cJSON *obj = cJSON_GetObjectItem(ns, BACKUP_NS[i]);
+        if (cJSON_IsObject(obj)) {
+            total += import_ns(BACKUP_NS[i], obj);
+        }
+    }
+    cJSON_Delete(root);
+
+    ESP_LOGI(TAG, "imported %d settings; rebooting to apply", total);
+
+    /* Reboot so every module reloads cleanly from the restored NVS. */
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddNumberToObject(resp, "restored", total);
+    cJSON_AddBoolToObject(resp, "rebooting", true);
+    esp_err_t err = send_json(req, resp);
+
+    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
+    return err;
 }
 
 /* ------------------------------------------------------------- endpoints */
@@ -615,6 +817,8 @@ esp_err_t web_server_start(void)
         { .uri = "/app.css",           .method = HTTP_GET,  .handler = get_app_css },
         { .uri = "/api/status",        .method = HTTP_GET,  .handler = get_status },
         { .uri = "/api/version",       .method = HTTP_GET,  .handler = get_version },
+        { .uri = "/api/settings/export", .method = HTTP_GET,  .handler = get_settings_export },
+        { .uri = "/api/settings/import", .method = HTTP_POST, .handler = post_settings_import },
         { .uri = "/api/devices",       .method = HTTP_GET,  .handler = get_devices },
         { .uri = "/api/scan",          .method = HTTP_POST, .handler = post_scan },
         { .uri = "/api/connect",       .method = HTTP_POST, .handler = post_connect },

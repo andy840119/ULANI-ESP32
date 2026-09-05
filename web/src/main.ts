@@ -14,13 +14,25 @@ const STATE_LABEL: Record<Status['state'], string> = {
 
 let busy = false;
 let lastDeviceKey = '';
+let savedAddress: string | null = null;
+let calendarConnected = false;
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-  <header>
-    <h1>ULANI 電子日曆</h1>
-    <p class="sub">透過 ESP32 更新畫面</p>
+  <header class="appbar">
+    <h1>ULANI</h1>
+    <div class="appbar-status">
+      <button class="ghost mini" id="bar-connect" hidden>連線</button>
+      <span class="chip"><span class="dot" id="bar-dot"></span><span id="bar-device">—</span></span>
+      <span class="ringwrap" id="bar-batt" hidden title="電量">
+        <span class="ring" id="bar-batt-ring"></span><span id="bar-batt-pct"></span>
+      </span>
+      <span class="ringwrap" id="bar-xfer" hidden title="傳送進度">
+        <span class="ring xfer" id="bar-xfer-ring"></span><span id="bar-xfer-pct"></span>
+      </span>
+      <button class="iconbtn" id="btn-settings" title="設定" aria-label="設定">⚙</button>
+    </div>
   </header>
   <section class="card" id="status-card">
     <div class="row"><span>狀態</span><strong id="s-state">—</strong></div>
@@ -40,7 +52,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <nav class="tabs" id="tabs">
     <button data-tab="calendar" class="active">日曆</button>
     <button data-tab="wifi">WiFi</button>
-    <button data-tab="tesserae">tesserae</button>
+    <button data-tab="tesserae">Tesserae</button>
   </nav>
 
   <div class="panel" data-panel="calendar">
@@ -49,16 +61,17 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <ol class="steps">
         <li>把日曆放在 ESP32 旁邊，確認它已開機。</li>
         <li>如果官方 App 或電腦正連著它，請先關掉——一次只能有一個裝置連線。</li>
-        <li><strong>如果日曆曾經和官方 App 配對過，需要先回復出廠預設值</strong>（見下方說明）。</li>
         <li>按下「搜尋日曆」，選擇你的裝置。</li>
       </ol>
 
       <details class="notice">
-        <summary>連不上？先回復出廠預設值</summary>
+        <summary>連不上 / connect: ESP_FAIL？先回復出廠預設值</summary>
         <p>
-          日曆會記住上一個配對過的裝置，並拒絕與新的裝置建立配對——這種情況下搜尋得到
-          裝置、但一按連線就失敗。把官方 App 移除並不會清掉這筆記錄，必須在日曆上回復
-          出廠預設值。
+          日曆只會記住一個配對過的裝置，並拒絕跟其他裝置建立配對——這時搜尋得到裝置、
+          但一按連線就在配對階段被日曆中斷（<code>connect: ESP_FAIL</code>）。這會發生在
+          兩種情況：日曆曾和官方 App 配對過；或這片板子更新／從 <code>0x0</code> 重刷過
+          韌體，板子這邊的配對金鑰被清掉、和日曆對不上了。移除官方 App 不會清掉日曆的
+          紀錄，必須在日曆上回復出廠預設值。
         </p>
         <p class="quote">
           按著【功能鍵】再戳【重置孔】一下，直到 LED 燈開始閃爍後，再放開【功能鍵】。
@@ -104,24 +117,6 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <div class="slots" id="slot-buttons">
         ${[1, 2, 3, 4].map((n) => `<button data-slot="${n}">${n}</button>`).join('')}
       </div>
-    </section>
-    <section class="card" id="settings-card">
-      <h2>3. 連線設定</h2>
-      <label class="field">
-        <span>閒置多久後把日曆交還</span>
-        <select id="idle-timeout">
-          <option value="60000">1 分鐘</option>
-          <option value="300000">5 分鐘</option>
-          <option value="900000">15 分鐘</option>
-          <option value="1800000">30 分鐘</option>
-          <option value="0">一直保持連線</option>
-        </select>
-      </label>
-      <p class="hint">
-        傳完圖或手動連線後會先保持連線這麼久，時間到就把日曆交還，讓官方 App
-        連得上。之後要送圖時板子會自己重新連回來，不需要有人在旁邊按。選「一直
-        保持連線」就不會主動交還。
-      </p>
     </section>
   </div>
 
@@ -179,8 +174,44 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     </section>
   </div>
 
+  <div class="panel" data-panel="settings" hidden>
+    <section class="card" id="settings-card">
+      <h2>連線設定</h2>
+      <label class="field">
+        <span>閒置多久後斷線省電</span>
+        <select id="idle-timeout">
+          <option value="60000">1 分鐘</option>
+          <option value="300000">5 分鐘</option>
+          <option value="900000">15 分鐘</option>
+          <option value="1800000">30 分鐘</option>
+          <option value="0">一直保持連線</option>
+        </select>
+      </label>
+      <p class="hint">
+        傳完圖或手動連線後會先保持連線這麼久，閒置超過就自動斷線——連著卻閒著會讓
+        板子持續耗電、發熱。之後要送圖時板子會自己重新連回來，不需要有人在旁邊按，
+        所以斷線不影響自動更新。選「一直保持連線」就不會主動斷開。
+      </p>
+    </section>
+    <section class="card" id="backup-card">
+      <h2>設定備份</h2>
+      <p class="hint">
+        用網頁刷韌體是從 <code>0x0</code> 整個蓋掉，會連記住的日曆、WiFi、Tesserae
+        設定、以及和日曆的<strong>配對</strong>一起清掉（<code>idf.py flash</code> 只寫
+        程式那幾塊，所以不會）。刷機前先匯出、刷完再匯入就能救回來——連配對一起還原，
+        所以<strong>不用再把日曆回復原廠</strong>。圖片不含在內，會從 Tesserae 或重新
+        上傳補回。備份含配對金鑰，只適用於同一片板子。
+      </p>
+      <div class="actions">
+        <button type="button" id="btn-export">匯出設定</button>
+        <button type="button" id="btn-import">匯入設定…</button>
+        <input type="file" id="import-file" accept="application/json,.json" hidden />
+      </div>
+      <p class="hint" id="backup-msg" hidden></p>
+    </section>
+  </div>
+
   <footer>
-    <p>圖片上傳與 dither 設定將在下一階段加入。</p>
     <p class="version" id="fw-version"></p>
   </footer>
 `;
@@ -196,6 +227,7 @@ function selectTab(name: string) {
   document.querySelectorAll<HTMLElement>('.panel').forEach((p) => {
     p.hidden = p.dataset.panel !== name;
   });
+  $('#btn-settings').classList.toggle('active', name === 'settings');
   localStorage.setItem(TAB_KEY, name);
 }
 
@@ -203,6 +235,9 @@ $('#tabs').addEventListener('click', (ev) => {
   const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>('button[data-tab]');
   if (btn) selectTab(btn.dataset.tab!);
 });
+
+// The gear opens a settings view that lives outside the tab strip.
+$('#btn-settings').addEventListener('click', () => selectTab('settings'));
 
 /*
  * Joining a network reloads nothing, but the browser may well be pointed at a
@@ -230,9 +265,18 @@ async function guard(fn: () => Promise<unknown>) {
   }
 }
 
+/* Turn a few known backend errors into something a user can act on. */
+function friendlyError(msg: string): string {
+  if (msg.includes('pairing refused')) {
+    return '日曆拒絕配對——它可能還記得舊的配對（曾配過官方 App，或韌體更新過）。'
+      + '請將日曆回復原廠設定後再連一次。';
+  }
+  return msg;
+}
+
 function showError(msg: string) {
   const el = $<HTMLParagraphElement>('#s-error');
-  el.textContent = msg;
+  el.textContent = friendlyError(msg);
   el.hidden = !msg;
 }
 
@@ -320,7 +364,52 @@ function renderBattery(st: Status) {
   row.classList.toggle('low', pct <= 20);
 }
 
+/*
+ * The always-visible top bar: a connection dot, the device name, and small
+ * pie rings for battery and (only mid-transfer) send progress. It repeats a
+ * little of the status card on purpose -- the card scrolls away, this does not.
+ */
+function renderStatusbar(st: Status) {
+  calendarConnected = st.connected;
+  const dot = $('#bar-dot');
+  dot.classList.toggle('on', st.connected);
+
+  const saved = st.savedDevice;
+  savedAddress = saved?.address ?? null;
+  $('#bar-device').textContent = st.connected
+    ? st.name || 'ULANI'
+    : saved
+      ? saved.name || saved.address
+      : '未連線';
+
+  /* Offer a one-tap connect when a calendar is remembered but not linked. */
+  $<HTMLButtonElement>('#bar-connect').hidden = !(saved && !st.connected);
+
+  const batt = $<HTMLElement>('#bar-batt');
+  if (st.connected && st.batteryLevel !== undefined) {
+    const pct = Math.max(0, Math.min(100, st.batteryLevel));
+    batt.hidden = false;
+    const ring = $('#bar-batt-ring');
+    ring.style.setProperty('--p', String(pct));
+    ring.style.setProperty('--rc', pct <= 20 ? 'var(--danger)' : 'var(--accent)');
+    $('#bar-batt-pct').textContent = `${pct}%`;
+  } else {
+    batt.hidden = true;
+  }
+
+  const xfer = $<HTMLElement>('#bar-xfer');
+  if (st.transfer.active && st.transfer.total > 0) {
+    const pct = Math.round((st.transfer.sent / st.transfer.total) * 100);
+    xfer.hidden = false;
+    $('#bar-xfer-ring').style.setProperty('--p', String(pct));
+    $('#bar-xfer-pct').textContent = `${pct}%`;
+  } else {
+    xfer.hidden = true;
+  }
+}
+
 function renderStatus(st: Status) {
+  renderStatusbar(st);
   $('#s-state').textContent = STATE_LABEL[st.state] ?? st.state;
   $('#s-device').textContent = st.connected
     ? `${st.name || 'ULANI'} (${st.address})`
@@ -397,6 +486,11 @@ $('#btn-scan').addEventListener('click', () => guard(() => api.scan()));
 
 $('#btn-disconnect').addEventListener('click', () => guard(() => api.disconnect()));
 
+// Header quick-connect: reach for the remembered calendar without hunting for it.
+$('#bar-connect').addEventListener('click', () => {
+  if (savedAddress) guard(() => api.connect(savedAddress!));
+});
+
 $('#btn-forget').addEventListener('click', () => guard(() => api.forgetDevice()));
 
 // One image per transfer: the slot the user picks is the only one touched.
@@ -422,6 +516,52 @@ $('#slot-buttons').addEventListener('click', (ev) => {
 
 $('#idle-timeout').addEventListener('change', (ev) => {
   guard(() => api.setIdleTimeout(Number((ev.target as HTMLSelectElement).value)));
+});
+
+/* ------------------------------------------------------ settings backup */
+
+function backupMsg(text: string, isError = false) {
+  const el = $<HTMLParagraphElement>('#backup-msg');
+  el.textContent = text;
+  el.hidden = !text;
+  el.classList.toggle('error', isError);
+}
+
+$('#btn-export').addEventListener('click', () =>
+  guard(async () => {
+    backupMsg('');
+    const res = await fetch(api.settingsExportUrl);
+    if (!res.ok) throw new Error(`匯出失敗（${res.status}）`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ulani-settings.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    backupMsg('已匯出設定檔，收好它，刷機後就靠它還原。');
+  }),
+);
+
+$('#btn-import').addEventListener('click', () => $('#import-file').click());
+
+$('#import-file').addEventListener('change', (ev) => {
+  const input = ev.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = ''; // let the same file be picked again after an error
+  if (!file) return;
+  guard(async () => {
+    backupMsg('');
+    const text = await file.text();
+    try {
+      JSON.parse(text);
+    } catch {
+      backupMsg('這不是有效的設定檔。', true);
+      return;
+    }
+    const r = await api.importSettings(text);
+    backupMsg(`已還原 ${r.restored} 筆設定，裝置正在重新啟動…重整頁面前請稍候幾秒。`);
+  });
 });
 
 /* ---------------------------------------------------------------- wifi */
@@ -557,7 +697,7 @@ async function poll() {
     renderStatus(st);
     maybeConnectOnLoad(st);
     renderWifi(await api.wifi());
-    renderTesserae((await api.tesserae()).clients);
+    renderTesserae((await api.tesserae()).clients, calendarConnected);
   } catch {
     if (++pollFails >= POLL_FAIL_LIMIT) {
       $('#s-state').textContent = '無法連上 ESP32';

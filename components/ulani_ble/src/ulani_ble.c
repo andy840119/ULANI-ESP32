@@ -969,6 +969,7 @@ esp_err_t ulani_ble_connect(const char *addr_str, uint32_t timeout_ms)
 
     sem_drain(s.conn_sem);
     s.conn_status = -1;
+    s.enc_status  = 0; /* so a stale pairing result cannot misread this attempt */
 
     ESP_LOGI(TAG, "connecting to %s (type %d)", addr_str, addr.type);
 
@@ -987,7 +988,13 @@ esp_err_t ulani_ble_connect(const char *addr_str, uint32_t timeout_ms)
     if (s.conn_status != 0) {
         ESP_LOGE(TAG, "connect failed status=%d (%s)", s.conn_status,
                  ble_hs_err_str(s.conn_status));
-        err = ESP_FAIL;
+        /*
+         * The link came up and then the peer dropped it during pairing: the
+         * calendar is bonded to a device whose keys we no longer have (a factory
+         * reset on its side, or NVS wiped here by a from-0x0 flash). Flag it
+         * apart from a plain connect miss so the UI can say "reset the calendar".
+         */
+        err = (s.enc_status != 0) ? ESP_ERR_NOT_ALLOWED : ESP_FAIL;
         goto out;
     }
 
