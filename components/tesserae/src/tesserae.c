@@ -2,6 +2,7 @@
 #include <time.h>
 
 #include "cJSON.h"
+#include "esp_app_desc.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -11,6 +12,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 
+#include "net_provision.h"
 #include "status_led.h"
 #include "tesserae.h"
 #include "ulani_store.h"
@@ -27,8 +29,17 @@ static const char *TAG = "tesserae";
 #define MIN_POLL_S      60
 #define ERROR_RETRY_S   60
 
-/* The server prefixes "v" when it displays this, so keep it a bare version. */
-#define FW_VERSION "0.1.0"
+/*
+ * What the device reports as its firmware version: the build's own version
+ * (PROJECT_VER -- the release tag, or "dev" locally), the same string
+ * /api/system/version returns. The server prefixes "v" when it displays this,
+ * so keep it a bare version.
+ */
+static const char *fw_version(void)
+{
+    const char *v = esp_app_get_description()->version;
+    return (v && v[0]) ? v : "dev";
+}
 
 /*
  * Spectra-6 nibble -> ULANI palette index.
@@ -74,8 +85,9 @@ static struct {
     SemaphoreHandle_t lock;
     SemaphoreHandle_t wake; /* interrupt the task's wait after a config change */
 
-    tesserae_frame_cb_t on_frame;
-    void               *user;
+    tesserae_frame_cb_t   on_frame;
+    tesserae_battery_cb_t battery;
+    void                 *user;
 
     client_t client[TESSERAE_CLIENTS];
 
@@ -255,12 +267,62 @@ static void config_erase(client_t *c)
     nvs_close(h);
 }
 
-static void mac_string(char *out, size_t len)
+/* ------------------------------------------------------------- identity */
+
+/*
+ * The MAC this slot announces itself with.
+ *
+ * Tesserae identifies a device by its MAC: /discover hands back the token of
+ * whatever instance carries the announced MAC, so four clients sending the one
+ * MAC the board has would all be handed the first slot's token and collapse
+ * into a single device on the server (issue #48). Four pages are four devices
+ * there, so each needs its own address.
+ *
+ * Slot 1 keeps the real station MAC, so a calendar registered before this
+ * stays registered. The others take that MAC with the locally-administered
+ * bit set -- which no real, globally-administered MAC ever has, so a derived
+ * address cannot collide with another board's -- and the slot mixed into the
+ * last byte to tell them apart.
+ */
+static void slot_mac(uint8_t slot, uint8_t out[6])
 {
-    uint8_t mac[6] = { 0 };
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    esp_read_mac(out, ESP_MAC_WIFI_STA);
+    if (slot > 1) {
+        out[0] |= 0x02;
+        out[5] ^= slot;
+    }
+}
+
+/* "ccba978bbabc" -- the form the default device id is built from. */
+static void mac_hex(uint8_t slot, char *out, size_t len)
+{
+    uint8_t m[6];
+    slot_mac(slot, m);
     snprintf(out, len, "%02x%02x%02x%02x%02x%02x",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+             m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+
+/* "cc:ba:97:8b:ba:bc" -- what the device card shows. The server strips the
+ * separators before comparing, so the spelling is display only. */
+static void mac_colons(uint8_t slot, char *out, size_t len)
+{
+    uint8_t m[6];
+    slot_mac(slot, m);
+    snprintf(out, len, "%02x:%02x:%02x:%02x:%02x:%02x",
+             m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+
+/*
+ * The id a slot announces before the server has told it one. Tesserae wants
+ * ^[a-z][a-z0-9_-]{1,31}$ and rejects anything else, so a bare MAC is not
+ * enough -- half of them start with a digit. The page number is in there
+ * because these show up four at a time in the Discovered strip.
+ */
+static void default_device_id(uint8_t slot, char *out, size_t len)
+{
+    char hex[13];
+    mac_hex(slot, hex, sizeof(hex));
+    snprintf(out, len, "ulani-%s-p%u", hex, (unsigned)slot);
 }
 
 /* ------------------------------------------------------------------ http */
@@ -369,17 +431,36 @@ static char *http_json(esp_http_client_method_t method, const char *url,
 
 static char *identity_body(client_t *c)
 {
-    char mac[13];
-    mac_string(mac, sizeof(mac));
+    char mac[18];
+    mac_colons(c->slot, mac, sizeof(mac));
+
+    char devid[TESSERAE_ID_MAX];
+    default_device_id(c->slot, devid, sizeof(devid));
+
+    /*
+     * The board's own MAC, not this page's derived one: the name is there to
+     * say which calendar the card belongs to, and two boards on one server
+     * would otherwise both offer four cards called "ULANI page N".
+     */
+    char board[13];
+    mac_hex(ULANI_SLOT_MIN, board, sizeof(board));
+
+    char name[40];
+    snprintf(name, sizeof(name), "ULANI %s page %u", board, (unsigned)c->slot);
 
     cJSON *o = cJSON_CreateObject();
-    /* The admin may have named the device; the MAC is only the fallback. */
-    cJSON_AddStringToObject(o, "device_id", c->device_id[0] ? c->device_id : mac);
+    /* The admin may have named the device; the derived id is only the
+     * fallback, and on a MAC match the server's id wins over either. */
+    cJSON_AddStringToObject(o, "device_id",
+                            c->device_id[0] ? c->device_id : devid);
     cJSON_AddStringToObject(o, "kind", TESSERAE_DEVICE_KIND);
     cJSON_AddNumberToObject(o, "panel_w", ULANI_IMG_W);
     cJSON_AddNumberToObject(o, "panel_h", ULANI_IMG_H);
-    cJSON_AddStringToObject(o, "fw_version", FW_VERSION);
+    cJSON_AddStringToObject(o, "fw_version", fw_version());
     cJSON_AddStringToObject(o, "mac", mac);
+    /* Only a suggestion for the Register card -- the admin's own name always
+     * wins, and a device already registered is never renamed by an announce. */
+    cJSON_AddStringToObject(o, "name", name);
 
     char *str = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
@@ -438,7 +519,15 @@ static bool try_register(client_t *c)
         if (token[0]) {
             lock();
             strlcpy(c->token, token, sizeof(c->token));
+            /*
+             * On a MAC match the server's id wins over the announced one, so
+             * adopt whatever comes back. /register answers without an id: it
+             * created the instance under the id we sent, so that one stands.
+             */
             json_str(r, "device_id", c->device_id, sizeof(c->device_id));
+            if (c->device_id[0] == 0) {
+                default_device_id(c->slot, c->device_id, sizeof(c->device_id));
+            }
             c->pairing_code[0] = 0; /* single use; keeping it guarantees a 403 */
             c->state = TESSERAE_IDLE;
             c->last_error[0] = 0;
@@ -497,10 +586,61 @@ static int32_t post_status(client_t *c)
     snprintf(url, sizeof(url), "%s/api/v1/device/%s/status",
              c->server_url, c->device_id);
 
+    char mac[18];
+    mac_colons(c->slot, mac, sizeof(mac));
+
+    /*
+     * The server merges each heartbeat into the last one, so only what is
+     * actually known goes in -- an unknown field left out keeps the previous
+     * value, while a made-up one overwrites it. Nothing here measures the
+     * room, so temperature_c and humidity_pct are never sent.
+     */
     cJSON *o = cJSON_CreateObject();
-    cJSON_AddStringToObject(o, "fw_version", FW_VERSION);
-    /* Mains powered through the ESP32, so a battery reading would be a lie. */
-    cJSON_AddNumberToObject(o, "rssi", 0);
+    cJSON_AddStringToObject(o, "fw_version", fw_version());
+    cJSON_AddStringToObject(o, "mac", mac);
+    cJSON_AddNumberToObject(o, "panel_w", ULANI_IMG_W);
+    cJSON_AddNumberToObject(o, "panel_h", ULANI_IMG_H);
+
+    net_sta_status_t net;
+    net_sta_get_status(&net);
+    if (net.state == NET_STA_CONNECTED) {
+        /* A real association reads well below zero; 0 means "not measured",
+         * which is what the old hard-coded value was saying by accident. */
+        if (net.rssi < 0) {
+            cJSON_AddNumberToObject(o, "rssi", net.rssi);
+        }
+        if (net.ip[0]) {
+            cJSON_AddStringToObject(o, "ip", net.ip);
+        }
+    }
+
+    /*
+     * The battery is the calendar's, not the board's -- the ESP32 runs off
+     * mains. It goes out as battery_pct because that is the field the device
+     * card, the history graph and the Home Assistant sensor read, but the
+     * scale of the byte behind it is unconfirmed (docs/protocol.md), so a low
+     * reading here is not yet evidence of a low battery. battery_mv is left
+     * out: there is no voltage to report, and inventing one would have the
+     * server derive a second, disagreeing percentage from it.
+     */
+    uint8_t pct = 0;
+    if (s.battery && s.battery(&pct, s.user) && pct <= 100) {
+        cJSON_AddNumberToObject(o, "battery_pct", pct);
+    }
+
+    /*
+     * When this client comes back. Not a deep sleep -- the board stays up --
+     * but it is the same promise, and it is what the server's wake prediction
+     * anchors on. The interval in hand is the one the server asked for last
+     * time; it answers this very request with the next one.
+     */
+    int32_t sleep_s = c->next_poll_s > 0 ? c->next_poll_s : DEFAULT_POLL_S;
+    cJSON_AddNumberToObject(o, "next_sleep_s", sleep_s);
+    uint32_t now = now_epoch();
+    if (now) {
+        cJSON_AddNumberToObject(o, "sleep_until", (double)now + sleep_s);
+    }
+
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     if (!body) {
@@ -828,6 +968,38 @@ static void tesserae_task(void *param)
     }
 }
 
+/*
+ * Undoes a registration made before each page announced its own MAC. Back then
+ * all four announced the board's one MAC, so the server handed pages 2-4 page
+ * 1's device -- one instance, four clients writing over each other's frame
+ * (issue #48). Those stored credentials name a device that is not this page's,
+ * so they are dropped and the page announces itself again; the server URL and
+ * everything else stays, and the admin approves the new card once.
+ */
+static void drop_shared_registration(client_t *c, int index)
+{
+    if (c->device_id[0] == 0) {
+        return;
+    }
+    for (int i = 0; i < index; i++) {
+        if (strcmp(s.client[i].device_id, c->device_id) != 0) {
+            continue;
+        }
+        ESP_LOGW(TAG, "slot %u shared device %s with slot %u; registering it "
+                      "again as a device of its own",
+                 c->slot, c->device_id, s.client[i].slot);
+        c->device_id[0] = 0;
+        c->token[0]     = 0;
+        c->etag[0]      = 0;
+        strlcpy(c->last_error,
+                "this page shared a Tesserae device with another; approve it "
+                "again under Settings > Devices",
+                sizeof(c->last_error));
+        config_save(c);
+        return;
+    }
+}
+
 /* ------------------------------------------------------------ public API */
 
 static client_t *client_for(uint8_t slot)
@@ -849,6 +1021,7 @@ esp_err_t tesserae_start(const tesserae_cfg_t *cfg)
     }
     if (cfg) {
         s.on_frame = cfg->on_frame;
+        s.battery  = cfg->battery;
         s.user     = cfg->user;
     }
 
@@ -857,6 +1030,7 @@ esp_err_t tesserae_start(const tesserae_cfg_t *cfg)
         client_t *c = &s.client[i];
         c->slot = (uint8_t)(ULANI_SLOT_MIN + i);
         config_load(c);
+        drop_shared_registration(c, i);
         c->state = c->server_url[0]
                        ? (c->token[0] ? TESSERAE_IDLE : TESSERAE_UNREGISTERED)
                        : TESSERAE_DISABLED;
