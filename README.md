@@ -1,5 +1,9 @@
 # ULANI-ESP32
 
+<p align="center">
+  <img src="docs/hero.svg" alt="一片 ESP32，讓 ULANI 日曆變成 Tesserae 底下的一台裝置：Tesserae 用 WiFi 抓圖、ESP32 用藍牙送進 ULANI 日曆" width="860">
+</p>
+
 相信有興趣進來看的人或多或少都會因為日曆有時候不更新，或是擔心到了新的一年後官方日曆主題就不再提供了。
 
 當初 ULANI 設計的方向是，希望圖片由手機運算完成，再由手機把畫面傳送到裝置上。雖然對節省成本/增加開發速度很有幫助，但這樣的架構會有幾個問題:
