@@ -123,11 +123,11 @@ function hideJoinForm() {
 }
 
 export function mountWifi() {
-  $('#btn-wifi-scan').addEventListener('click', () => guard(() => api.wifiScan()));
+  $('#btn-wifi-scan').addEventListener('click', () => guard(() => api.wifi.scan()));
 
   $('#btn-wifi-forget').addEventListener('click', () =>
     guard(async () => {
-      await api.wifiForget();
+      await api.wifi.forget();
       hideJoinForm();
     }),
   );
@@ -146,7 +146,7 @@ export function mountWifi() {
     const ssid = joining;
     const password = $<HTMLInputElement>('#w-pass').value;
     guard(async () => {
-      await api.wifiConnect(ssid, password);
+      await api.wifi.connect(ssid, password);
       hideJoinForm();
     });
   });

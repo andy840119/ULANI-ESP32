@@ -277,7 +277,7 @@ export function mountTesserae() {
       const url = input(n, 'tc-url').value.trim();
       if (!url) return;
       guard(() =>
-        api.tesseraeConnect({
+        api.tesserae.connect({
           slot: n,
           serverUrl: url,
           pairingCode: input(n, 'tc-code').value.trim(),
@@ -288,20 +288,20 @@ export function mountTesserae() {
     });
 
     card.querySelector('.tc-poll')!.addEventListener('click', () =>
-      guard(() => api.tesseraePoll(n)),
+      guard(() => api.tesserae.poll(n)),
     );
 
     card.querySelector('.tc-send')!.addEventListener('click', () =>
-      guard(() => api.sendSlot(n)),
+      guard(() => api.calendar.sendPage(n)),
     );
 
     card.querySelector('.tc-badge')!.addEventListener('change', (ev) =>
-      guard(() => api.setSlotBadge(n, (ev.target as HTMLInputElement).checked)),
+      guard(() => api.calendar.setBadge(n, (ev.target as HTMLInputElement).checked)),
     );
 
     card.querySelector('.tc-forget')!.addEventListener('click', () =>
       guard(async () => {
-        await api.tesseraeForget(n);
+        await api.tesserae.forget(n);
         filled.delete(n);
         for (const cls of ['tc-url', 'tc-code', 'tc-devid', 'tc-token']) {
           input(n, cls).value = '';
@@ -315,7 +315,7 @@ export function mountTesserae() {
       if (!box.classList.contains('loadable')) return;
       guard(async () => {
         setPreview(n, placeholder('讀取中…'));
-        const bytes = await api.slotImage(n);
+        const bytes = await api.calendar.pageImage(n);
         setPreview(n, framePreview(bytes));
         box.classList.remove('loadable');
       });

@@ -64,13 +64,13 @@ function backupMsg(text: string, isError = false) {
 
 export function mountSettings() {
   $('#idle-timeout').addEventListener('change', (ev) => {
-    guard(() => api.setIdleTimeout(Number((ev.target as HTMLSelectElement).value)));
+    guard(() => api.system.setCalendarKeepAlive(Number((ev.target as HTMLSelectElement).value)));
   });
 
   $('#btn-export').addEventListener('click', () =>
     guard(async () => {
       backupMsg('');
-      const res = await fetch(api.settingsExportUrl);
+      const res = await fetch(api.system.exportUrl);
       if (!res.ok) throw new Error(`匯出失敗（${res.status}）`);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -99,7 +99,7 @@ export function mountSettings() {
         backupMsg('這不是有效的設定檔。', true);
         return;
       }
-      const r = await api.importSettings(text);
+      const r = await api.system.import(text);
       backupMsg(`已還原 ${r.restored} 筆設定，裝置正在重新啟動…重整頁面前請稍候幾秒。`);
     });
   });

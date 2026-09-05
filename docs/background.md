@@ -47,7 +47,7 @@ server（例如 NAS 上的 docker）定時算好圖推給 ESP32，ESP32 只負�
 
 - 閒置五分鐘後，韌體主動送 `askForDisconnect` 並斷線，**同時把自動連線關掉**
   （`ulani_app.c` 的閒置 tick）。
-- 要恢復只能按一次「連線」（`POST /api/connect`），或重開 ESP32。
+- 要恢復只能按一次「連線」（`POST /api/calendar/connect`），或重開 ESP32。
 
 這個設計是從原專案沿用的，而原專案跑在 PC 上、假設使用者**也會用官方 App**，
 所以要懂得禮讓，把日曆讓出來。

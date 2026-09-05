@@ -89,7 +89,7 @@ function maybeConnectOnLoad(st: Status) {
   if (connectOnLoadDone) return;
   connectOnLoadDone = true;
   if (st.savedDevice && !st.connected) {
-    api.connect(st.savedDevice.address).catch(() => {});
+    api.calendar.connect(st.savedDevice.address).catch(() => {});
   }
 }
 
@@ -106,14 +106,14 @@ const POLL_FAIL_LIMIT = 3;
 
 async function poll() {
   try {
-    const st = await api.status();
+    const st = await api.calendar.get();
     pollFails = 0;
     renderStatus(st);
     renderCalendar(st);
     renderSettings(st);
     maybeConnectOnLoad(st);
-    renderWifi(await api.wifi());
-    renderTesserae((await api.tesserae()).clients, st.connected);
+    renderWifi(await api.wifi.get());
+    renderTesserae((await api.tesserae.get()).clients, st.connected);
   } catch {
     if (++pollFails >= POLL_FAIL_LIMIT) showOffline();
   }
@@ -125,7 +125,7 @@ async function poll() {
  * board runs, so fetch it once and drop it in the footer. "dev" (an untagged
  * local build) is shown as such; a real version marks a production build.
  */
-api
+api.system
   .version()
   .then((v) => {
     $('#fw-version').textContent = v.production
@@ -133,7 +133,7 @@ api
       : `開發版（${v.version}）`;
   })
   .catch(() => {
-    /* Old firmware without /api/version, or offline: leave the line blank. */
+    /* Old firmware without /api/system/version, or offline: leave the line blank. */
   });
 
 poll();

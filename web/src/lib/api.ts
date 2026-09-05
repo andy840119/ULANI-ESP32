@@ -98,51 +98,71 @@ const post = (path: string, payload?: unknown) =>
     body: payload === undefined ? undefined : JSON.stringify(payload),
   });
 
+/*
+ * Grouped by subsystem, matching the /api/<group>/... paths on the firmware:
+ * system (the board), calendar (the ULANI device + its four pages), wifi, and
+ * tesserae (the render service). Reads are get(); everything else is a verb.
+ */
 export const api = {
-  status: () => request<Status>('/api/status'),
-  version: () => request<{ version: string; production: boolean }>('/api/version'),
-  devices: () => request<{ devices: Device[] }>('/api/devices'),
-  scan: (durationMs = 8000) => post('/api/scan', { durationMs }),
-  connect: (address: string) => post('/api/connect', { address }),
-  disconnect: () => post('/api/disconnect'),
-  forgetDevice: () => post('/api/forget-device'),
-  refresh: () => post('/api/refresh'),
-  setIdleTimeout: (ms: number) => post('/api/settings', { idleTimeoutMs: ms }),
-  settingsExportUrl: '/api/settings/export',
-  importSettings: (json: string) =>
-    request<{ ok: boolean; restored: number; rebooting: boolean }>(
-      '/api/settings/import',
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json },
-    ),
-  setSlot: (slot: number) => post('/api/slot', { slot }),
-  testImage: (slot: number, seed?: number, activate = false) =>
-    post('/api/test-image', { slot, seed: seed ?? 0, activate }),
-
-  tesserae: () => request<{ clients: TesseraeClient[] }>('/api/tesserae'),
-  tesseraeConnect: (opts: {
-    slot: number;
-    serverUrl: string;
-    pairingCode: string;
-    deviceId: string;
-    token: string;
-  }) => post('/api/tesserae/connect', opts),
-  tesseraePoll: (slot: number) => post('/api/tesserae/poll', { slot }),
-  tesseraeForget: (slot: number) => post('/api/tesserae/forget', { slot }),
-  sendSlot: (slot: number) => post('/api/slot/send', { slot }),
-  setSlotBadge: (slot: number, on: boolean) =>
-    post('/api/slot/badge', { slot, on }),
-
-  async slotImage(slot: number): Promise<Uint8Array> {
-    const res = await fetch(`/api/slot/download?slot=${slot}`);
-    if (!res.ok) {
-      throw new ApiError(`${res.status} ${res.statusText}`);
-    }
-    return new Uint8Array(await res.arrayBuffer());
+  /* The board itself: firmware version and persisted settings. */
+  system: {
+    version: () =>
+      request<{ version: string; production: boolean }>('/api/system/version'),
+    /* How long to hold the calendar link before dropping it to save power. A
+     * board-wide preference, so it lives here rather than on api.calendar. */
+    setCalendarKeepAlive: (ms: number) =>
+      post('/api/system/settings', { idleTimeoutMs: ms }),
+    exportUrl: '/api/system/settings/export',
+    import: (json: string) =>
+      request<{ ok: boolean; restored: number; rebooting: boolean }>(
+        '/api/system/settings/import',
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json },
+      ),
   },
 
-  wifi: () => request<WifiStatus>('/api/wifi'),
-  wifiScan: () => post('/api/wifi/scan'),
-  wifiConnect: (ssid: string, password: string) =>
-    post('/api/wifi/connect', { ssid, password }),
-  wifiForget: () => post('/api/wifi/forget'),
+  /* The ULANI calendar over BLE, and its four pages (slots). */
+  calendar: {
+    get: () => request<Status>('/api/calendar/status'),
+    devices: () => request<{ devices: Device[] }>('/api/calendar/devices'),
+    scan: (durationMs = 8000) => post('/api/calendar/scan', { durationMs }),
+    connect: (address: string) => post('/api/calendar/connect', { address }),
+    disconnect: () => post('/api/calendar/disconnect'),
+    forget: () => post('/api/calendar/forget'),
+    refresh: () => post('/api/calendar/refresh'),
+    setPage: (slot: number) => post('/api/calendar/slot', { slot }),
+    testImage: (slot: number, seed?: number, activate = false) =>
+      post('/api/calendar/test-image', { slot, seed: seed ?? 0, activate }),
+    sendPage: (slot: number) => post('/api/calendar/slot/send', { slot }),
+    setBadge: (slot: number, on: boolean) =>
+      post('/api/calendar/slot/badge', { slot, on }),
+    async pageImage(slot: number): Promise<Uint8Array> {
+      const res = await fetch(`/api/calendar/slot/download?slot=${slot}`);
+      if (!res.ok) {
+        throw new ApiError(`${res.status} ${res.statusText}`);
+      }
+      return new Uint8Array(await res.arrayBuffer());
+    },
+  },
+
+  wifi: {
+    get: () => request<WifiStatus>('/api/wifi/status'),
+    scan: () => post('/api/wifi/scan'),
+    connect: (ssid: string, password: string) =>
+      post('/api/wifi/connect', { ssid, password }),
+    forget: () => post('/api/wifi/forget'),
+  },
+
+  /* The self-hosted Tesserae render service, one client per page. */
+  tesserae: {
+    get: () => request<{ clients: TesseraeClient[] }>('/api/tesserae/status'),
+    connect: (opts: {
+      slot: number;
+      serverUrl: string;
+      pairingCode: string;
+      deviceId: string;
+      token: string;
+    }) => post('/api/tesserae/connect', opts),
+    poll: (slot: number) => post('/api/tesserae/poll', { slot }),
+    forget: (slot: number) => post('/api/tesserae/forget', { slot }),
+  },
 };
