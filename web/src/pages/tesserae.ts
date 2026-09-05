@@ -14,10 +14,9 @@
 
 import { api, type TesseraeClient, type TesseraeState } from '../lib/api';
 import { framePreview } from '../lib/frame-preview';
+import { $, guard } from '../lib/ui';
 
 const SLOTS = [1, 2, 3, 4];
-
-const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
 const STATE_LABEL: Record<TesseraeState, string> = {
   disabled: '未設定',
@@ -264,7 +263,7 @@ function setPreview(slot: number, node: HTMLElement) {
   box.appendChild(node);
 }
 
-export function mountTesserae(guard: (fn: () => Promise<unknown>) => void) {
+export function mountTesserae() {
   for (const n of SLOTS) {
     const card = $(`#tc-${n}`);
 
