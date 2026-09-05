@@ -60,6 +60,12 @@ ESP32 定時去把 Tesserae 產生的日曆圖抓回來後更新到 ULANI 電子
 - **省電**：平常不需要隨時和 ULANI 日曆保持連線，能夠更省電一些。
 - **esp-32 C3 / S3 皆可**：原始碼不綁晶片。
 
+<p align="center">
+  <img src="docs/demo.jpg" alt="ULANI 日曆顯示 Tesserae 算好的日曆＋天氣 dashboard，背景是 Tesserae 網頁的 live preview" width="720">
+  <br>
+  <sub>ULANI 日曆顯示 Tesserae 算好的畫面，背景是 Tesserae 網頁上的 live preview。</sub>
+</p>
+
 .
 
 ## 我是新手，看不懂這專案的程式，我只想讓我的日曆能動起來
