@@ -108,6 +108,12 @@ export const api = {
   forgetDevice: () => post('/api/forget-device'),
   refresh: () => post('/api/refresh'),
   setIdleTimeout: (ms: number) => post('/api/settings', { idleTimeoutMs: ms }),
+  settingsExportUrl: '/api/settings/export',
+  importSettings: (json: string) =>
+    request<{ ok: boolean; restored: number; rebooting: boolean }>(
+      '/api/settings/import',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json },
+    ),
   setSlot: (slot: number) => post('/api/slot', { slot }),
   testImage: (slot: number, seed?: number, activate = false) =>
     post('/api/test-image', { slot, seed: seed ?? 0, activate }),
