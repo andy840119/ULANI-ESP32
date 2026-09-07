@@ -585,6 +585,11 @@ static esp_err_t post_tesserae_connect(httpd_req_t *req)
                         "slot must be 1..4; a token also needs its device id, "
                         "and the fields have length limits");
     }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_err(req, "409 Conflict",
+                        "another page already uses that Tesserae device; give "
+                        "this page its own, or the two will show the same image");
+    }
     return err == ESP_OK ? send_ok(req)
                          : send_err(req, "500 Internal Server Error", "could not save");
 }

@@ -11,6 +11,7 @@ ESP32 韌體，讓 ULANI 電子日曆變成 [Tesserae](https://github.com/dmello
 - [docs/rest-api.md](docs/rest-api.md) — 韌體 REST 端點（前端 `web/src/lib/api.ts` 對應）。
 - [docs/building.md](docs/building.md) — 怎麼編譯、燒錄、跑前端。
 - [docs/known-issues.md](docs/known-issues.md) — 已知限制，別當成 bug 去「修」。
+- [docs/diagnostics.md](docs/diagnostics.md) — 板上事件日誌：格式、容量、怎麼加事件。
 
 ## 一定要知道的規矩
 

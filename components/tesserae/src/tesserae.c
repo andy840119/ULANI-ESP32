@@ -1084,6 +1084,22 @@ esp_err_t tesserae_configure(uint8_t slot, const char *server_url,
     if (token && token[0] && !(device_id && device_id[0])) {
         return ESP_ERR_INVALID_ARG;
     }
+    /*
+     * Two pages pointed at one Tesserae device is the shape of issue #48: both
+     * fetch the same dashboard, so whatever page 1 was designed for turns up on
+     * page 2 as well, and the two clients write over each other's ETag. The
+     * server hands out a device per page; refuse to let the board undo that.
+     */
+    if (device_id && device_id[0]) {
+        for (int i = 0; i < TESSERAE_CLIENTS; i++) {
+            client_t *other = &s.client[i];
+            if (other != c && strcmp(other->device_id, device_id) == 0) {
+                ESP_LOGW(TAG, "slot %u already uses device %s", other->slot,
+                         device_id);
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+    }
 
     lock();
     strlcpy(c->server_url, server_url, sizeof(c->server_url));
