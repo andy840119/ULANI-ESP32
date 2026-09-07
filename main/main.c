@@ -12,6 +12,7 @@
 #include "esp_mac.h"
 #include "nvs_flash.h"
 
+#include "diag_log.h"
 #include "net_provision.h"
 #include "status_led.h"
 #include "tesserae.h"
@@ -82,6 +83,14 @@ void app_main(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+
+    /*
+     * Before anything that might be worth recording. The log is not important
+     * enough to stop the board coming up, so a failure here is a warning.
+     */
+    if (diag_log_start(NULL) != ESP_OK) {
+        ESP_LOGW(TAG, "event log unavailable; carrying on without it");
+    }
 
     /* Cosmetic, so a failure here should not stop the board coming up. */
     if (status_led_init() != ESP_OK) {
