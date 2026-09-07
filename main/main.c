@@ -32,6 +32,23 @@ static void build_ssid(char *out, size_t len)
     snprintf(out, len, "ULANI-Setup-%02X%02X", mac[4], mac[5]);
 }
 
+/*
+ * Where the event log lands when it is set to survive a reboot, and when it
+ * may not. The log component knows nothing about SPIFFS and nothing about the
+ * radio; wiring the two together is this file's job.
+ */
+static esp_err_t log_sink(const void *data, size_t len, void *user)
+{
+    (void)user;
+    return ulani_store_log_append(data, len);
+}
+
+static bool log_busy(void *user)
+{
+    (void)user;
+    return ulani_app_transfer_active();
+}
+
 static void on_tesserae_frame(uint8_t slot, void *user)
 {
     (void)user;
@@ -88,7 +105,11 @@ void app_main(void)
      * Before anything that might be worth recording. The log is not important
      * enough to stop the board coming up, so a failure here is a warning.
      */
-    if (diag_log_start(NULL) != ESP_OK) {
+    const diag_log_cfg_t diag = {
+        .write = log_sink,
+        .busy  = log_busy,
+    };
+    if (diag_log_start(&diag) != ESP_OK) {
         ESP_LOGW(TAG, "event log unavailable; carrying on without it");
     }
 

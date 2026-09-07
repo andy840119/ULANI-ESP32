@@ -700,6 +700,14 @@ static void worker_task(void *param)
 
 /* ------------------------------------------------------------ public API */
 
+bool ulani_app_transfer_active(void)
+{
+    status_lock();
+    bool busy = a.status.transfer_active;
+    status_unlock();
+    return busy;
+}
+
 void ulani_app_set_slot_sent_cb(void (*cb)(uint8_t slot, bool ok))
 {
     a.slot_sent_cb = cb;
