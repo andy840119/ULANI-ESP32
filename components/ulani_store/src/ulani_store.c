@@ -543,12 +543,20 @@ esp_err_t ulani_store_log_append(const void *data, size_t len)
     fclose(fp);
     if (wrote != len) {
         /*
-         * A short write leaves a partial record behind, so believe the file
-         * rather than the counter and let the next append land after it.
+         * A short write leaves half a record at the end of the segment, and
+         * everything after it would be read at the wrong offset -- one failed
+         * write would cost the whole segment. Cut back to a record boundary,
+         * and if even that fails, believe the file rather than the counter so
+         * the next append at least lands after the damage.
          */
         log_hdr_t hdr;
         size_t    bytes = 0;
         if (log_seg_read((uint8_t)lg.cur, &hdr, &bytes)) {
+            size_t whole = bytes - (bytes % sizeof(diag_rec_t));
+            if (whole != bytes &&
+                truncate(path, (off_t)(sizeof(log_hdr_t) + whole)) == 0) {
+                bytes = whole;
+            }
             lg.cur_bytes = bytes;
         }
         return ESP_ERR_NO_MEM;
