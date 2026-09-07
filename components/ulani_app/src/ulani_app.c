@@ -12,6 +12,7 @@
 
 #include "net_provision.h"
 #include "status_led.h"
+#include "diag_log.h"
 #include "ulani_app.h"
 
 static const char *TAG = "ulani_app";
@@ -65,6 +66,13 @@ static struct {
     /* When each reading was last answered by the calendar. 0 = never. */
     int64_t battery_us;
     int64_t slot_us;
+
+    /*
+     * Whether the active page has been read at least once on this connection.
+     * A page turn first seen right after reconnecting was not necessarily made
+     * while we were watching, and the log says which (issue #51).
+     */
+    bool slot_seen_this_link;
 
     ulani_device_t saved;        /* remembered device, addr empty if none */
     bool           auto_connect; /* armed: keep trying to reach `saved` */
@@ -236,6 +244,13 @@ static void on_ble_event(const ulani_event_t *ev, void *user)
         break;
 
     case ULANI_EV_DISCONNECTED:
+        /*
+         * The next reading belongs to a new connection, and whether a page
+         * turn was first seen across a reconnect is the difference between
+         * "the panel moved while we watched" and "it moved while we were not
+         * even there" (issue #51).
+         */
+        a.slot_seen_this_link    = false;
         a.status.connected       = false;
         a.status.active_slot     = 0;
         a.status.battery_rsp     = 0;
@@ -273,6 +288,16 @@ static void on_ble_event(const ulani_event_t *ev, void *user)
 
 /* ----------------------------------------------------------------- worker */
 
+/* True until the active slot has been read once on the current link. */
+static bool slot_unseen_this_link(void)
+{
+    status_lock();
+    bool first = !a.slot_seen_this_link;
+    a.slot_seen_this_link = true;
+    status_unlock();
+    return first;
+}
+
 static esp_err_t read_battery(void)
 {
     uint16_t  battery = 0;
@@ -284,11 +309,15 @@ static esp_err_t read_battery(void)
     /* The reply is <opcode><level>; the level is the low byte. */
     uint8_t level = (uint8_t)(battery & 0xff);
     status_lock();
+    bool moved = (a.status.battery_rsp != battery);
     a.status.battery_rsp   = battery;
     a.status.battery_level = level;
     a.status.battery_valid = true;
     a.battery_us           = esp_timer_get_time();
     status_unlock();
+    if (moved) {
+        diag_log(DIAG_BLE_BATTERY, 0, 0, battery, 0);
+    }
     return ESP_OK;
 }
 
@@ -309,13 +338,21 @@ static esp_err_t read_active_slot(void)
     }
 
     status_lock();
-    bool changed         = (a.status.active_slot != slot);
-    a.status.active_slot = slot;
-    a.slot_us            = esp_timer_get_time();
+    uint8_t was           = a.status.active_slot;
+    bool    changed       = (was != slot);
+    a.status.active_slot  = slot;
+    a.slot_us             = esp_timer_get_time();
     status_unlock();
 
+    bool first = slot_unseen_this_link();
     if (changed) {
         ESP_LOGI(TAG, "active slot is %u (changed on the device)", slot);
+        /*
+         * Nothing here asked for this. Either someone pressed the button, or
+         * the panel decided by itself -- and result says whether we were even
+         * connected when it happened, which is the first thing worth knowing.
+         */
+        diag_log(DIAG_BLE_SLOT_CHANGED, slot, first ? 1 : 0, was, slot);
     }
     return ESP_OK;
 }
@@ -460,6 +497,7 @@ static void handle_cmd(const cmd_t *cmd)
                       err);
             break;
         }
+        diag_log(DIAG_BLE_SLOT_SET, cmd->slot, 0, 0, 0);
         err = ulani_ble_set_active_slot(cmd->slot);
         if (err != ESP_OK) {
             set_error("set slot", err);
@@ -510,6 +548,17 @@ static void handle_cmd(const cmd_t *cmd)
 
         ESP_LOGI(TAG, "sending stored image to slot %u%s", cmd->slot,
                  (out.read != src.read) ? " (badged)" : "");
+        /*
+         * What is on screen before the image goes in. Paired with the reading
+         * taken afterwards this settles, without anyone being in the room,
+         * whether writing a page makes the panel jump to it (issue #51).
+         */
+        uint8_t before = 0;
+        ulani_ble_get_active_slot(&before);
+        diag_log(DIAG_BLE_SEND_BEGIN, cmd->slot, 0, before,
+                 (out.read != src.read) ? 1 : 0);
+        int64_t send_us = esp_timer_get_time();
+
         net_power_boost(true);
         status_led_set(STATUS_LED_UPLOAD, true);
         err = ulani_ble_send_image(cmd->slot, &out);
@@ -519,6 +568,8 @@ static void handle_cmd(const cmd_t *cmd)
 
         if (err != ESP_OK) {
             set_error("send image", err);
+            diag_log(DIAG_BLE_SEND_DONE, cmd->slot, -1, 0,
+                     (int32_t)((esp_timer_get_time() - send_us) / 1000));
         } else {
             /*
              * Repaint only if this page is the one on screen -- otherwise the
@@ -527,8 +578,12 @@ static void handle_cmd(const cmd_t *cmd)
              * the device makes stale (matches CMD_TEST_IMAGE below).
              */
             uint8_t active = 0;
-            if (ulani_ble_get_active_slot(&active) == ESP_OK && active == cmd->slot) {
+            bool    asked   = ulani_ble_get_active_slot(&active) == ESP_OK;
+            diag_log(DIAG_BLE_SEND_DONE, cmd->slot, 0, asked ? active : 0,
+                     (int32_t)((esp_timer_get_time() - send_us) / 1000));
+            if (asked && active == cmd->slot) {
                 ESP_LOGI(TAG, "slot %u is on screen; repainting it", cmd->slot);
+                diag_log(DIAG_BLE_SLOT_SET, cmd->slot, 0, 1, 0);
                 ulani_ble_set_active_slot(cmd->slot);
             }
         }

@@ -97,12 +97,15 @@ typedef enum {
                                    * result = 1 if this is the first read after
                                    * reconnecting (so it moved while we were away) */
     DIAG_BLE_SLOT_SET      = 403, /* we sent 0b: slot, a = why (0 user, 1 repaint) */
-    DIAG_BLE_SEND_BEGIN    = 404, /* slot = target, a = page on screen now, b = crc */
+    DIAG_BLE_SEND_BEGIN    = 404, /* slot = target, a = page on screen now,
+                                   * b = 1 if the page number is stamped on it */
     DIAG_BLE_SEND_ATTEMPT  = 405, /* a = reply word, b = ms, result = attempt  */
     DIAG_BLE_SEND_DONE     = 406, /* slot, a = page on screen after, b = ms    */
     DIAG_BLE_OP_TIMEOUT    = 407, /* a = opcode that got no reply              */
     DIAG_BLE_UNMATCHED     = 408, /* a = reply word, b = opcode we waited for  */
     DIAG_BLE_BATTERY       = 409, /* a = raw reply word (only when it moves)   */
+    DIAG_BLE_SEND_PAYLOAD  = 410, /* a = payload crc: the same image twice is
+                                   * worth being able to see                   */
 
     /* ---- web API (5xx), only calls that change something ---- */
     DIAG_WEB_ACTION        = 500, /* a = caller IPv4, b = diag_web_action_t    */

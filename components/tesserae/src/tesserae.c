@@ -534,6 +534,7 @@ static bool try_register(client_t *c)
             c->last_error[0] = 0;
             unlock();
             config_save(c);
+            diag_log(DIAG_TESS_REGISTERED, c->slot, 0, status, 0);
             ESP_LOGI(TAG, "slot %u registered as %s", c->slot, c->device_id);
             ok = true;
         } else {
@@ -648,10 +649,13 @@ static int32_t post_status(client_t *c)
         return -1;
     }
 
-    int   status = 0;
-    char *rsp = http_json(HTTP_METHOD_POST, url, body, c->token, NULL, NULL,
-                          &status, NULL, 0);
+    int     status  = 0;
+    int64_t started = esp_timer_get_time();
+    char   *rsp = http_json(HTTP_METHOD_POST, url, body, c->token, NULL, NULL,
+                            &status, NULL, 0);
     free(body);
+    int32_t ms = (int32_t)((esp_timer_get_time() - started) / 1000);
+    diag_log(DIAG_TESS_STATUS, c->slot, rsp ? 0 : -1, status, ms);
     if (!rsp) {
         return -1;
     }
@@ -663,6 +667,7 @@ static int32_t post_status(client_t *c)
         cJSON *v = cJSON_GetObjectItemCaseSensitive(r, "next_poll_s");
         if (cJSON_IsNumber(v)) {
             next = (int32_t)v->valuedouble;
+            diag_log(DIAG_TESS_NEXT_POLL, c->slot, 0, next, 0);
         }
         cJSON_Delete(r);
     }
@@ -672,6 +677,7 @@ static int32_t post_status(client_t *c)
         c->state    = TESSERAE_UNREGISTERED;
         unlock();
         config_save(c);
+        diag_log(DIAG_TESS_REJECTED, c->slot, 0, status, 0);
         ESP_LOGW(TAG, "slot %u: token rejected; will register again", c->slot);
     }
     return next;
@@ -712,6 +718,9 @@ static bool fetch_frame_body(client_t *c, const char *url, bool with_auth)
     bool ok = false;
     ulani_store_writer_t writer;
     bool writing = false;
+    int  status  = 0;
+    size_t written = 0;
+    const int64_t started = esp_timer_get_time();
 
     if (esp_http_client_open(cli, 0) != ESP_OK) {
         set_error(c, "cannot open the frame URL");
@@ -719,7 +728,7 @@ static bool fetch_frame_body(client_t *c, const char *url, bool with_auth)
     }
 
     int64_t total = esp_http_client_fetch_headers(cli); /* fires header_evt */
-    int status = esp_http_client_get_status_code(cli);
+    status = esp_http_client_get_status_code(cli);
 
     if (status != 200) {
         ESP_LOGW(TAG, "slot %u: frame body HTTP %d from %s", c->slot, status, url);
@@ -755,7 +764,6 @@ static bool fetch_frame_body(client_t *c, const char *url, bool with_auth)
     writing = true;
 
     static uint8_t buf[1024];
-    size_t written = 0;
 
     while (written < ULANI_PAYLOAD_BYTES) {
         int want = (int)sizeof(buf);
@@ -786,6 +794,12 @@ static bool fetch_frame_body(client_t *c, const char *url, bool with_auth)
     ok = true;
 
 done:
+    if (ok) {
+        diag_log(DIAG_TESS_FRAME_STORED, c->slot, 0, (int32_t)written,
+                 (int32_t)((esp_timer_get_time() - started) / 1000));
+    } else {
+        diag_log(DIAG_TESS_FRAME_FAILED, c->slot, -1, status, (int32_t)written);
+    }
     if (writing) {
         ulani_store_write_abort(&writer);
     }
@@ -801,10 +815,13 @@ static bool poll_frame(client_t *c)
     snprintf(url, sizeof(url), "%s/api/v1/device/%s/frame",
              c->server_url, c->device_id);
 
-    int  status = 0;
-    char etag[TESSERAE_ETAG_MAX] = { 0 };
-    char *rsp = http_json(HTTP_METHOD_GET, url, NULL, c->token, NULL, c->etag,
-                          &status, etag, sizeof(etag));
+    int     status = 0;
+    char    etag[TESSERAE_ETAG_MAX] = { 0 };
+    int64_t started = esp_timer_get_time();
+    char   *rsp = http_json(HTTP_METHOD_GET, url, NULL, c->token, NULL, c->etag,
+                            &status, etag, sizeof(etag));
+    diag_log(DIAG_TESS_FRAME, c->slot, rsp ? 0 : -1, status,
+             (int32_t)((esp_timer_get_time() - started) / 1000));
 
     if (status == 304) {
         free(rsp);
