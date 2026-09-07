@@ -71,7 +71,7 @@ typedef struct {
     int32_t          next_poll_s;   /* cadence the server asked for */
     int32_t          seconds_until_poll;
     char             last_error[96];
-    /* Wall-clock unix times, from the server's HTTP Date header (0 = unknown):
+    /* Wall-clock unix times (0 = the clock was still unknown):
      *   last_check_epoch  when the server was last asked about this page
      *   last_frame_epoch  when a *new* frame was last stored (a 304 does not count)
      *   last_sent_epoch   when this page was last sent to the calendar over BLE

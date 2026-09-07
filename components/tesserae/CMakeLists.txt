@@ -3,4 +3,4 @@ idf_component_register(
     INCLUDE_DIRS "include"
     REQUIRES ulani_store
     PRIV_REQUIRES esp_http_client json nvs_flash esp_timer esp_hw_support
-                  esp_app_format net_provision status_led)
+                  esp_app_format diag_log net_provision status_led)

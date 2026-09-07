@@ -1,4 +1,5 @@
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "cJSON.h"
@@ -12,6 +13,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 
+#include "diag_log.h"
 #include "net_provision.h"
 #include "status_led.h"
 #include "tesserae.h"
@@ -90,14 +92,6 @@ static struct {
     void                 *user;
 
     client_t client[TESSERAE_CLIENTS];
-
-    /*
-     * Wall clock, learned from the server's HTTP Date header rather than SNTP,
-     * as the reference firmware does. base_epoch is the server time at the
-     * instant base_us was sampled from the monotonic timer; 0 = unknown.
-     */
-    int64_t wall_base_epoch;
-    int64_t wall_base_us;
 } s;
 
 static void lock(void)   { xSemaphoreTake(s.lock, portMAX_DELAY); }
@@ -166,31 +160,38 @@ static int64_t parse_http_date(const char *d)
     return epoch > 1500000000 ? epoch : 0;
 }
 
+/* The wall clock, or 0 while nothing has set it yet. */
+static uint32_t now_epoch(void)
+{
+    time_t now = time(NULL);
+    return (now > 1500000000) ? (uint32_t)now : 0;
+}
+
+/*
+ * The server's Date header as a clock of last resort.
+ *
+ * NTP is what normally sets the time (net_provision), and it is the better
+ * source by a wide margin -- seconds rather than "whenever the last reply came
+ * back", and available before any Tesserae request has succeeded. But a
+ * network that blocks NTP and a Tesserae box on the LAN is a perfectly ordinary
+ * setup, and there the reference firmware's trick is all there is. So: fill in
+ * the system clock the first time a reply carries a usable date, and stay out
+ * of the way once anything better has set it.
+ */
 static void note_wall_clock(const char *date_hdr)
 {
-    if (!date_hdr) {
+    if (!date_hdr || now_epoch() != 0) {
         return;
     }
     int64_t epoch = parse_http_date(date_hdr);
     if (epoch <= 0) {
         return;
     }
-    lock();
-    s.wall_base_epoch = epoch;
-    s.wall_base_us    = esp_timer_get_time();
-    unlock();
-}
-
-static uint32_t now_epoch(void)
-{
-    lock();
-    int64_t base = s.wall_base_epoch;
-    int64_t at   = s.wall_base_us;
-    unlock();
-    if (base <= 0) {
-        return 0;
-    }
-    return (uint32_t)(base + (esp_timer_get_time() - at) / 1000000);
+    struct timeval tv = { .tv_sec = (time_t)epoch, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+    ESP_LOGI(TAG, "clock set from the server's Date header: %lld",
+             (long long)epoch);
+    diag_log(DIAG_SYS_TIME_SYNC, 0, 0, (int32_t)epoch, 1);
 }
 
 /* ---------------------------------------------------------------- config */
@@ -1134,7 +1135,7 @@ void tesserae_note_sent(uint8_t slot)
     if (!c) {
         return;
     }
-    uint32_t at = now_epoch(); /* takes the lock itself, so before ours */
+    uint32_t at = now_epoch();
     lock();
     c->last_sent_epoch = at;
     unlock();
