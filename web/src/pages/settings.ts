@@ -1,10 +1,12 @@
 /*
  * The settings view (opened by the header gear): how long to hold the BLE link
- * before dropping it to save power, and export/import of everything a web flash
- * would wipe.
+ * before dropping it to save power, export/import of everything a web flash
+ * would wipe, and the event log -- switches, a live tail, export and clear.
  */
 
-import { api, type Status } from '../lib/api';
+import { api, type LogStatus, type Status } from '../lib/api';
+import { describe, isNotable, sourceOf, timeText, SOURCE_LABEL, type LogRecord }
+  from '../lib/logcodes';
 import { $, guard } from '../lib/ui';
 
 export function settingsMarkup(): string {
@@ -44,6 +46,56 @@ export function settingsMarkup(): string {
       </div>
       <p class="hint" id="backup-msg" hidden></p>
     </section>
+    <section class="card" id="log-card">
+      <h2>事件日誌</h2>
+      <p class="hint">
+        板子平常不接電腦，序列埠的訊息沒有人看得到，所以它會把自己做過的事記在身上：
+        每一次跟 Tesserae 的往返、跟日曆的連線與傳圖、以及後台上每一個會改變狀態的操作
+        （含來源 IP）。出事之後把它匯出來看，就不用靠猜的。
+      </p>
+      <label class="field">
+        <span>記錄事件</span>
+        <select id="log-enabled">
+          <option value="1">開啟</option>
+          <option value="0">停用</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>斷電後保留（寫入 flash）</span>
+        <select id="log-persist">
+          <option value="1">保留</option>
+          <option value="0">只留在記憶體</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>保留上限</span>
+        <select id="log-segments">
+          <option value="2">128 KB（約 5 天）</option>
+          <option value="4">256 KB（約 10 天）</option>
+          <option value="8">512 KB（約 20 天）</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>文字 log 收錄層級</span>
+        <select id="log-trace">
+          <option value="1">只收錯誤</option>
+          <option value="2">錯誤與警告</option>
+          <option value="3">全部（抓問題時再開）</option>
+        </select>
+      </label>
+      <p class="hint">
+        「停用」只是停止記錄，<strong>不會清掉已經記下來的東西</strong>。文字 log 只留在
+        記憶體裡（約 30 分鐘），開成「全部」會轉得更快，抓完問題記得轉回來。
+      </p>
+      <p class="hint" id="log-stats"></p>
+      <div class="actions">
+        <button type="button" id="btn-log-csv">匯出 CSV</button>
+        <button type="button" id="btn-log-ndjson">匯出 NDJSON</button>
+        <button type="button" id="btn-log-trace">下載文字 log</button>
+        <button type="button" id="btn-log-clear">清除日誌</button>
+      </div>
+      <ul class="log-list" id="log-list"></ul>
+    </section>
   </div>`;
 }
 
@@ -60,6 +112,86 @@ function backupMsg(text: string, isError = false) {
   el.textContent = text;
   el.hidden = !text;
   el.classList.toggle('error', isError);
+}
+
+/* ------------------------------------------------------------- event log */
+
+/*
+ * The log has its own poll rather than riding the shared status one: it is
+ * only interesting while this panel is open, and it is the one view where a
+ * request that costs the board something should not be made behind the user's
+ * back.
+ */
+let logTimer: number | undefined;
+
+function logVisible(): boolean {
+  const panel = document.querySelector<HTMLElement>('.panel[data-panel="settings"]');
+  return !!panel && !panel.hidden;
+}
+
+function renderLogStats(st: LogStatus) {
+  const held = st.count;
+  const flash = (st.flashBytes / 1024).toFixed(0);
+  const cap = ((st.segments * st.segmentBytes) / 1024).toFixed(0);
+  const lost = st.dropped ? `，已回收 ${st.dropped} 筆` : '';
+  $('#log-stats').textContent =
+    `記憶體裡 ${held}/${st.capacity} 筆${lost}；flash 用了 ${flash} KB / ${cap} KB，` +
+    `分割區還剩 ${(st.storageFree / 1024).toFixed(0)} KB。`;
+}
+
+function renderLogList(records: LogRecord[]) {
+  const list = $<HTMLUListElement>('#log-list');
+  /* Newest first: the reason anyone opens this is "what just happened". */
+  list.innerHTML = records
+    .slice(-120)
+    .reverse()
+    .map((rec) => {
+      const src = sourceOf(rec);
+      return `<li class="${isNotable(rec) ? 'notable' : ''}">
+        <span class="log-time">${timeText(rec)}</span>
+        <span class="log-src log-src-${src}">${SOURCE_LABEL[src]}</span>
+        <span class="log-text"></span>
+      </li>`;
+    })
+    .join('');
+  /* Text goes in as text, never as markup: some of it is device-reported. */
+  const texts = list.querySelectorAll<HTMLSpanElement>('.log-text');
+  records
+    .slice(-120)
+    .reverse()
+    .forEach((rec, i) => {
+      if (texts[i]) texts[i].textContent = describe(rec);
+    });
+}
+
+async function refreshLog() {
+  const [st, tail] = await Promise.all([api.system.log.status(), api.system.log.tail()]);
+  renderLogStats(st);
+  renderLogList(tail.records);
+
+  const set = (id: string, value: string | number) => {
+    const el = $<HTMLSelectElement>(id);
+    if (document.activeElement !== el) el.value = String(value);
+  };
+  set('#log-enabled', st.enabled ? 1 : 0);
+  set('#log-persist', st.persist ? 1 : 0);
+  set('#log-segments', st.segments);
+  set('#log-trace', st.traceLevel);
+}
+
+function download(url: string, name: string) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+}
+
+export function startLogPolling() {
+  if (logTimer !== undefined) return;
+  logTimer = window.setInterval(() => {
+    if (logVisible()) void refreshLog().catch(() => {});
+  }, 5000);
+  if (logVisible()) void refreshLog().catch(() => {});
 }
 
 export function mountSettings() {
@@ -84,6 +216,37 @@ export function mountSettings() {
   );
 
   $('#btn-import').addEventListener('click', () => $('#import-file').click());
+
+  for (const [id, key] of [
+    ['#log-enabled', 'enabled'],
+    ['#log-persist', 'persist'],
+    ['#log-segments', 'segments'],
+    ['#log-trace', 'traceLevel'],
+  ] as const) {
+    $(id).addEventListener('change', (ev) => {
+      const raw = Number((ev.target as HTMLSelectElement).value);
+      const value = key === 'enabled' || key === 'persist' ? raw === 1 : raw;
+      guard(async () => {
+        await api.system.log.settings({ [key]: value });
+        await refreshLog();
+      });
+    });
+  }
+
+  $('#btn-log-csv').addEventListener('click', () =>
+    download(api.system.log.exportUrl('csv'), 'ulani-log.csv'));
+  $('#btn-log-ndjson').addEventListener('click', () =>
+    download(api.system.log.exportUrl('ndjson'), 'ulani-log.ndjson'));
+  $('#btn-log-trace').addEventListener('click', () =>
+    download(api.system.log.traceUrl, 'ulani-trace.txt'));
+
+  $('#btn-log-clear').addEventListener('click', () => {
+    if (!confirm('清除日誌？記憶體和 flash 裡的紀錄都會消失，無法復原。')) return;
+    guard(async () => {
+      await api.system.log.clear();
+      await refreshLog();
+    });
+  });
 
   $('#import-file').addEventListener('change', (ev) => {
     const input = ev.target as HTMLInputElement;

@@ -1,3 +1,5 @@
+import type { LogRecord } from './logcodes';
+
 /* Thin wrapper over the firmware REST API. */
 
 export type UlaniState =
@@ -98,6 +100,25 @@ const post = (path: string, payload?: unknown) =>
     body: payload === undefined ? undefined : JSON.stringify(payload),
   });
 
+export interface LogStatus {
+  schema: number;
+  enabled: boolean;
+  persist: boolean;
+  traceLevel: number;
+  bootId: number;
+  oldestSeq: number;
+  nextSeq: number;
+  dropped: number;
+  capacity: number;
+  count: number;
+  traceLen: number;
+  traceTotal: number;
+  flashBytes: number;
+  segments: number;
+  segmentBytes: number;
+  storageFree: number;
+}
+
 /*
  * Grouped by subsystem, matching the /api/<group>/... paths on the firmware:
  * system (the board), calendar (the ULANI device + its four pages), wifi, and
@@ -113,6 +134,24 @@ export const api = {
     setCalendarKeepAlive: (ms: number) =>
       post('/api/system/settings', { idleTimeoutMs: ms }),
     exportUrl: '/api/system/settings/export',
+    /* The on-board event log: what happened while nobody was watching. */
+    log: {
+      status: () => request<LogStatus>('/api/system/log/status'),
+      tail: (since = 0, limit = 200) =>
+        request<{ oldestSeq: number; nextSeq: number; dropped: number; records: LogRecord[] }>(
+          `/api/system/log?since=${since}&limit=${limit}`,
+        ),
+      exportUrl: (format: 'csv' | 'ndjson' = 'csv') =>
+        `/api/system/log/export?format=${format}`,
+      traceUrl: '/api/system/log/trace',
+      settings: (opts: Partial<{
+        enabled: boolean;
+        persist: boolean;
+        traceLevel: number;
+        segments: number;
+      }>) => post('/api/system/log/settings', opts),
+      clear: () => post('/api/system/log/clear'),
+    },
     import: (json: string) =>
       request<{ ok: boolean; restored: number; rebooting: boolean }>(
         '/api/system/settings/import',

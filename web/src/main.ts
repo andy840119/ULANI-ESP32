@@ -9,7 +9,8 @@ import './style.css';
 import { api, type Status } from './lib/api';
 import { $ } from './lib/ui';
 import { calendarMarkup, mountCalendar, renderCalendar } from './pages/calendar';
-import { mountSettings, renderSettings, settingsMarkup } from './pages/settings';
+import { mountSettings, renderSettings, settingsMarkup, startLogPolling }
+  from './pages/settings';
 import { mountStatus, renderStatus, showOffline, statusMarkup } from './pages/status';
 import { mountTesserae, renderTesserae, tesseraeMarkup } from './pages/tesserae';
 import { mountWifi, renderWifi, wifiMarkup } from './pages/wifi';
@@ -73,6 +74,7 @@ mountStatus();
 mountCalendar();
 mountWifi();
 mountSettings();
+startLogPolling();
 mountTesserae();
 
 /* ---------------------------------------------------------------- poll */
