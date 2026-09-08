@@ -144,7 +144,11 @@ typedef bool (*diag_busy_fn)(void *user);
 
 typedef struct {
     uint16_t      records;     /* ring capacity; 0 = DIAG_DEFAULT_RECORDS */
-    uint16_t      trace_bytes; /* text ring; 0 = no text capture at all */
+    uint16_t      trace_bytes; /* text ring size; 0 = DIAG_DEFAULT_TRACE.
+                                * To capture nothing, set the trace level to
+                                * ESP_LOG_NONE -- a size of zero here used to
+                                * mean "off", which made a caller that simply
+                                * did not mention the field lose the trace. */
     diag_write_fn write;       /* NULL = RAM only, whatever the setting says */
     diag_busy_fn  busy;        /* NULL = always safe to write */
     void         *user;
@@ -164,6 +168,13 @@ void diag_log(uint16_t code, uint8_t slot, int8_t result, int32_t a, int32_t b);
 typedef struct {
     uint32_t oldest_seq;  /* seq of the oldest record still held */
     uint32_t next_seq;    /* seq the next record will get */
+    /*
+     * Everything below this has reached the sink. seq counts from zero on
+     * every boot -- flash may well hold higher numbers from the boot before --
+     * so this, not "one past the last record in flash", is where a reader
+     * that has just drained flash should pick up in RAM.
+     */
+    uint32_t flushed_seq;
     uint32_t dropped;     /* records recycled out of the ring since boot */
     uint16_t capacity;
     uint16_t count;

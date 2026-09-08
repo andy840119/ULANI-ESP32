@@ -78,6 +78,7 @@ export function settingsMarkup(): string {
       <label class="field">
         <span>文字 log 收錄層級</span>
         <select id="log-trace">
+          <option value="0">不收</option>
           <option value="1">只收錯誤</option>
           <option value="2">錯誤與警告</option>
           <option value="3">全部（抓問題時再開）</option>

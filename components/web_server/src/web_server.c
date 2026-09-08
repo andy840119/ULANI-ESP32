@@ -822,9 +822,12 @@ static esp_err_t redirect_to_root(httpd_req_t *req, httpd_err_code_t err)
 
 /*
  * The log is read in two pieces: whatever has been written to flash, then the
- * records still only in RAM. Flash always holds a prefix of the same stream --
- * records reach it in sequence order -- so the join is simply "everything in
- * RAM after the last seq flash gave us".
+ * records still only in RAM. The join is stats.flushed_seq, not the last seq
+ * flash handed back: seq restarts at zero every boot, so after a restart flash
+ * ends on a *higher* number than anything in RAM and "carry on from there"
+ * silently drops the whole of the current boot. The snapshot is taken before
+ * the flash pass, so a record flushed while the export runs is written twice
+ * rather than not at all.
  */
 
 /* Who is asking, for the records that say a change came from the web. */
@@ -978,9 +981,7 @@ static esp_err_t get_log_export(httpd_req_t *req)
         return ESP_OK;
     }
 
-    uint32_t last_seq = 0;
-    bool     any      = false;
-    size_t   offset   = 0;
+    size_t offset = 0;
     for (;;) {
         size_t got = ulani_store_log_read(offset, recs, BATCH * sizeof(diag_rec_t));
         size_t n   = got / sizeof(diag_rec_t);
@@ -1003,12 +1004,10 @@ static esp_err_t get_log_export(httpd_req_t *req)
                          recs[i].result, (long)recs[i].a, (long)recs[i].b);
             }
             chunk(req, line);
-            last_seq = recs[i].seq;
-            any      = true;
         }
     }
 
-    uint32_t from = any ? last_seq + 1 : 0;
+    uint32_t from = st.flushed_seq;
     for (;;) {
         size_t n = diag_log_read(from, recs, BATCH);
         if (n == 0) {
@@ -1103,24 +1102,6 @@ static esp_err_t post_log_clear(httpd_req_t *req)
 
 esp_err_t web_server_start(void)
 {
-    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 32;
-    cfg.lru_purge_enable = true;
-    cfg.stack_size       = 6144;
-    /*
-     * Must stay below CONFIG_LWIP_MAX_SOCKETS with room for the listener and
-     * the captive-portal DNS socket, or accept() fails with ENFILE and requests
-     * are refused before any handler runs.
-     */
-    cfg.max_open_sockets = 10;
-    cfg.backlog_conn     = 8;
-
-    esp_err_t err = httpd_start(&s_server, &cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "httpd_start: %s", esp_err_to_name(err));
-        return err;
-    }
-
     static const httpd_uri_t routes[] = {
         { .uri = "/",                  .method = HTTP_GET,  .handler = get_index },
         { .uri = "/app.js",            .method = HTTP_GET,  .handler = get_app_js },
@@ -1163,8 +1144,40 @@ esp_err_t web_server_start(void)
         { .uri = "/api/tesserae/poll",          .method = HTTP_POST, .handler = post_tesserae_poll },
         { .uri = "/api/tesserae/forget",        .method = HTTP_POST, .handler = post_tesserae_forget },
     };
+
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    /*
+     * Derived, never a number typed in here. httpd silently refuses to
+     * register past this limit -- the route is simply not there and every
+     * request for it falls through to the 404 handler -- so a table that grew
+     * past a hand-written figure would cost whichever endpoint happened to be
+     * last, with nothing to say so (caught exactly that way in #52).
+     */
+    cfg.max_uri_handlers = sizeof(routes) / sizeof(routes[0]);
+    cfg.lru_purge_enable = true;
+    cfg.stack_size       = 6144;
+    /*
+     * Must stay below CONFIG_LWIP_MAX_SOCKETS with room for the listener and
+     * the captive-portal DNS socket, or accept() fails with ENFILE and requests
+     * are refused before any handler runs.
+     */
+    cfg.max_open_sockets = 10;
+    cfg.backlog_conn     = 8;
+
+    esp_err_t err = httpd_start(&s_server, &cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_start: %s", esp_err_to_name(err));
+        return err;
+    }
+
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
-        httpd_register_uri_handler(s_server, &routes[i]);
+        esp_err_t rerr = httpd_register_uri_handler(s_server, &routes[i]);
+        if (rerr != ESP_OK) {
+            /* Loud, because the symptom otherwise is one endpoint quietly
+             * answering the captive-portal redirect forever. */
+            ESP_LOGE(TAG, "route %s did not register: %s", routes[i].uri,
+                     esp_err_to_name(rerr));
+        }
     }
 
     httpd_register_err_handler(s_server, HTTPD_404_NOT_FOUND, redirect_to_root);

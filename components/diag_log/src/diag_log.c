@@ -171,6 +171,7 @@ void diag_log_get_stats(diag_log_stats_t *out)
     }
     lock();
     out->next_seq    = s.next_seq;
+    out->flushed_seq = s.flushed_seq;
     out->count       = s.count;
     out->capacity    = s.cap;
     out->dropped     = s.dropped;
@@ -430,7 +431,8 @@ esp_err_t diag_log_start(const diag_log_cfg_t *cfg)
         return ESP_ERR_NO_MEM;
     }
 
-    uint16_t trace_bytes = cfg ? cfg->trace_bytes : DIAG_DEFAULT_TRACE;
+    uint16_t trace_bytes = (cfg && cfg->trace_bytes) ? cfg->trace_bytes
+                                                     : DIAG_DEFAULT_TRACE;
     if (trace_bytes) {
         s.trace = calloc(1, trace_bytes);
         if (s.trace) {

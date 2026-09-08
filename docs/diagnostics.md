@@ -71,7 +71,12 @@ seq,uptime_ms,epoch,code,slot,result,a,b
 ```
 
 `format=ndjson` 則是一行一個 JSON 物件，欄位名同上。匯出的內容是 **flash 裡的部分接上
-還只在 RAM 裡的部分**——記錄是照 `seq` 順序落地的，所以 flash 永遠是同一條串流的前綴。
+還只在 RAM 裡的部分**，接點取自 `flushed_seq`。
+
+> **`seq` 每次開機從 0 重數**，所以 flash 裡可能留著上一次開機、數字更大的紀錄。要判斷
+> 「RAM 裡哪些還沒落地」只能看 `flushed_seq`，不能拿 flash 最後一筆的 `seq` 往下接——
+> 那樣重開機之後會整段掉。檔案本身仍是照時間順序寫的；開機的分界看 `code=100` 那一筆
+> （它帶著 boot id）。
 
 ## 時間
 
