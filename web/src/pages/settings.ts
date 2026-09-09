@@ -89,6 +89,7 @@ export function settingsMarkup(): string {
         記憶體裡（約 30 分鐘），開成「全部」會轉得更快，抓完問題記得轉回來。
       </p>
       <p class="hint" id="log-stats"></p>
+      <p class="hint error" id="log-error" hidden></p>
       <div class="actions">
         <button type="button" id="btn-log-csv">匯出 CSV</button>
         <button type="button" id="btn-log-ndjson">匯出 NDJSON</button>
@@ -128,6 +129,12 @@ let logTimer: number | undefined;
 function logVisible(): boolean {
   const panel = document.querySelector<HTMLElement>('.panel[data-panel="settings"]');
   return !!panel && !panel.hidden;
+}
+
+function logError(text: string) {
+  const el = $<HTMLParagraphElement>('#log-error');
+  el.textContent = text ? `日誌讀取失敗：${text}` : '';
+  el.hidden = !text;
 }
 
 function renderLogStats(st: LogStatus) {
@@ -187,12 +194,23 @@ function download(url: string, name: string) {
   a.click();
 }
 
+/*
+ * A failed read used to be swallowed here, which meant the panel simply went
+ * on showing whatever the selects happened to default to -- the log looking
+ * merely idle while it was in fact unreadable. Say so instead.
+ */
+function pollLog() {
+  if (!logVisible()) return;
+  void refreshLog().then(
+    () => logError(''),
+    (err: unknown) => logError(err instanceof Error ? err.message : String(err)),
+  );
+}
+
 export function startLogPolling() {
   if (logTimer !== undefined) return;
-  logTimer = window.setInterval(() => {
-    if (logVisible()) void refreshLog().catch(() => {});
-  }, 5000);
-  if (logVisible()) void refreshLog().catch(() => {});
+  logTimer = window.setInterval(pollLog, 5000);
+  pollLog();
 }
 
 export function mountSettings() {

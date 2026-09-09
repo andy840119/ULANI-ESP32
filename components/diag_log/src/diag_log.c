@@ -130,13 +130,16 @@ void diag_log(uint16_t code, uint8_t slot, int8_t result, int32_t a, int32_t b)
         s.count++;
     } else {
         /*
-         * The ring is full and this record just overwrote the oldest one. If
-         * it had not reached the sink yet it is gone for good, so say so
-         * rather than letting the export look complete.
+         * The ring is full and this record just overwrote the oldest one.
+         * That is only a loss if it had not reached the sink yet: with the
+         * flash tier on, the ring turning over is the normal state of affairs
+         * and counting it would have the log claim thousands of missing
+         * records while holding every one of them.
          */
-        s.dropped++;
-        if (s.flushed_seq < rec.seq - s.cap + 1) {
-            s.flushed_seq = rec.seq - s.cap + 1;
+        uint32_t oldest_kept = rec.seq - s.cap + 1;
+        if (s.flushed_seq < oldest_kept) {
+            s.dropped += oldest_kept - s.flushed_seq;
+            s.flushed_seq = oldest_kept;
         }
     }
     unlock();

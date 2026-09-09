@@ -175,7 +175,10 @@ typedef struct {
      * that has just drained flash should pick up in RAM.
      */
     uint32_t flushed_seq;
-    uint32_t dropped;     /* records recycled out of the ring since boot */
+    uint32_t dropped;     /* records actually lost: overwritten in the ring
+                           * before reaching flash, or recycled out of flash.
+                           * The ring turning over with the sink keeping up is
+                           * not a loss and is not counted. */
     uint16_t capacity;
     uint16_t count;
     uint32_t boot_id;

@@ -851,18 +851,39 @@ static void web_log_action(httpd_req_t *req, uint8_t slot, int action)
     diag_log(DIAG_WEB_ACTION, slot, 0, (int32_t)peer_ip(req), action);
 }
 
-static void add_rec(cJSON *arr, const diag_rec_t *r)
+static esp_err_t chunk(httpd_req_t *req, const char *text)
 {
-    cJSON *o = cJSON_CreateObject();
-    cJSON_AddNumberToObject(o, "seq", r->seq);
-    cJSON_AddNumberToObject(o, "uptimeMs", r->uptime_ms);
-    cJSON_AddNumberToObject(o, "epoch", r->epoch);
-    cJSON_AddNumberToObject(o, "code", r->code);
-    cJSON_AddNumberToObject(o, "slot", r->slot);
-    cJSON_AddNumberToObject(o, "result", r->result);
-    cJSON_AddNumberToObject(o, "a", r->a);
-    cJSON_AddNumberToObject(o, "b", r->b);
-    cJSON_AddItemToArray(arr, o);
+    return httpd_resp_send_chunk(req, text, HTTPD_RESP_USE_STRLEN);
+}
+
+/*
+ * Records are formatted straight into a line buffer, never assembled as a
+ * cJSON tree. A tree costs roughly nine nodes and eight key strings per
+ * record -- something like 800 bytes each -- and then printing it wants one
+ * more contiguous allocation for the whole document. A couple of hundred
+ * records is well past the ~60 KB this board has free, so the read that was
+ * supposed to be routine is the one that fails, and it only starts failing
+ * once there is enough history to be worth reading.
+ *
+ * Both formatters are shared by the live tail and the export so the two can
+ * never drift apart.
+ */
+static int rec_json(char *out, size_t len, const diag_rec_t *r)
+{
+    return snprintf(out, len,
+                    "{\"seq\":%lu,\"uptimeMs\":%lu,\"epoch\":%lu,\"code\":%u,"
+                    "\"slot\":%u,\"result\":%d,\"a\":%ld,\"b\":%ld}",
+                    (unsigned long)r->seq, (unsigned long)r->uptime_ms,
+                    (unsigned long)r->epoch, r->code, r->slot, r->result,
+                    (long)r->a, (long)r->b);
+}
+
+static int rec_csv(char *out, size_t len, const diag_rec_t *r)
+{
+    return snprintf(out, len, "%lu,%lu,%lu,%u,%u,%d,%ld,%ld\n",
+                    (unsigned long)r->seq, (unsigned long)r->uptime_ms,
+                    (unsigned long)r->epoch, r->code, r->slot, r->result,
+                    (long)r->a, (long)r->b);
 }
 
 static esp_err_t get_log_status(httpd_req_t *req)
@@ -891,11 +912,19 @@ static esp_err_t get_log_status(httpd_req_t *req)
     return send_json(req, root);
 }
 
-/* The live view: the RAM ring only, which is all a browser needs to tail. */
+/*
+ * The live view: the RAM ring only, which is all a browser needs to tail.
+ * Streamed a few records at a time, so the cost of answering does not grow
+ * with how much history the board is holding.
+ */
+#define LOG_TAIL_DEFAULT 120
+#define LOG_TAIL_MAX     200
+#define LOG_TAIL_BATCH   16
+
 static esp_err_t get_log(httpd_req_t *req)
 {
     uint32_t since = 0;
-    size_t   limit = 200;
+    size_t   limit = LOG_TAIL_DEFAULT;
 
     char query[64];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
@@ -905,36 +934,53 @@ static esp_err_t get_log(httpd_req_t *req)
         }
         if (httpd_query_key_value(query, "limit", value, sizeof(value)) == ESP_OK) {
             size_t n = (size_t)strtoul(value, NULL, 10);
-            if (n > 0 && n < limit) {
-                limit = n;
+            if (n > 0) {
+                limit = (n < LOG_TAIL_MAX) ? n : LOG_TAIL_MAX;
             }
         }
     }
 
-    diag_rec_t *recs = malloc(limit * sizeof(diag_rec_t));
-    if (!recs) {
-        return send_err(req, "503 Service Unavailable", "out of memory");
-    }
-    size_t n = diag_log_read(since, recs, limit);
-
     diag_log_stats_t st;
     diag_log_get_stats(&st);
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "oldestSeq", st.oldest_seq);
-    cJSON_AddNumberToObject(root, "nextSeq", st.next_seq);
-    cJSON_AddNumberToObject(root, "dropped", st.dropped);
-    cJSON *arr = cJSON_AddArrayToObject(root, "records");
-    for (size_t i = 0; i < n; i++) {
-        add_rec(arr, &recs[i]);
-    }
-    free(recs);
-    return send_json(req, root);
-}
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-static esp_err_t chunk(httpd_req_t *req, const char *text)
-{
-    return httpd_resp_send_chunk(req, text, HTTPD_RESP_USE_STRLEN);
+    char line[192];
+    snprintf(line, sizeof(line),
+             "{\"oldestSeq\":%lu,\"nextSeq\":%lu,\"dropped\":%lu,\"records\":[",
+             (unsigned long)st.oldest_seq, (unsigned long)st.next_seq,
+             (unsigned long)st.dropped);
+    chunk(req, line);
+
+    diag_rec_t batch[LOG_TAIL_BATCH];
+    uint32_t   from = since;
+    size_t     sent = 0;
+
+    while (sent < limit) {
+        size_t want = limit - sent;
+        if (want > LOG_TAIL_BATCH) {
+            want = LOG_TAIL_BATCH;
+        }
+        size_t n = diag_log_read(from, batch, want);
+        if (n == 0) {
+            break;
+        }
+        for (size_t i = 0; i < n; i++) {
+            size_t at = 0;
+            if (sent) {
+                line[at++] = ',';
+            }
+            rec_json(line + at, sizeof(line) - at, &batch[i]);
+            chunk(req, line);
+            sent++;
+        }
+        from = batch[n - 1].seq + 1;
+    }
+
+    chunk(req, "]}");
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
 }
 
 /*
@@ -991,17 +1037,13 @@ static esp_err_t get_log_export(httpd_req_t *req)
         offset += n * sizeof(diag_rec_t);
         for (size_t i = 0; i < n; i++) {
             if (ndjson) {
-                snprintf(line, sizeof(line),
-                         "{\"seq\":%lu,\"uptimeMs\":%lu,\"epoch\":%lu,\"code\":%u,"
-                         "\"slot\":%u,\"result\":%d,\"a\":%ld,\"b\":%ld}\n",
-                         (unsigned long)recs[i].seq, (unsigned long)recs[i].uptime_ms,
-                         (unsigned long)recs[i].epoch, recs[i].code, recs[i].slot,
-                         recs[i].result, (long)recs[i].a, (long)recs[i].b);
+                int at = rec_json(line, sizeof(line) - 2, &recs[i]);
+                if (at > 0 && (size_t)at < sizeof(line) - 2) {
+                    line[at]     = 0x0a;
+                    line[at + 1] = 0;
+                }
             } else {
-                snprintf(line, sizeof(line), "%lu,%lu,%lu,%u,%u,%d,%ld,%ld\n",
-                         (unsigned long)recs[i].seq, (unsigned long)recs[i].uptime_ms,
-                         (unsigned long)recs[i].epoch, recs[i].code, recs[i].slot,
-                         recs[i].result, (long)recs[i].a, (long)recs[i].b);
+                rec_csv(line, sizeof(line), &recs[i]);
             }
             chunk(req, line);
         }
@@ -1015,17 +1057,13 @@ static esp_err_t get_log_export(httpd_req_t *req)
         }
         for (size_t i = 0; i < n; i++) {
             if (ndjson) {
-                snprintf(line, sizeof(line),
-                         "{\"seq\":%lu,\"uptimeMs\":%lu,\"epoch\":%lu,\"code\":%u,"
-                         "\"slot\":%u,\"result\":%d,\"a\":%ld,\"b\":%ld}\n",
-                         (unsigned long)recs[i].seq, (unsigned long)recs[i].uptime_ms,
-                         (unsigned long)recs[i].epoch, recs[i].code, recs[i].slot,
-                         recs[i].result, (long)recs[i].a, (long)recs[i].b);
+                int at = rec_json(line, sizeof(line) - 2, &recs[i]);
+                if (at > 0 && (size_t)at < sizeof(line) - 2) {
+                    line[at]     = 0x0a;
+                    line[at + 1] = 0;
+                }
             } else {
-                snprintf(line, sizeof(line), "%lu,%lu,%lu,%u,%u,%d,%ld,%ld\n",
-                         (unsigned long)recs[i].seq, (unsigned long)recs[i].uptime_ms,
-                         (unsigned long)recs[i].epoch, recs[i].code, recs[i].slot,
-                         recs[i].result, (long)recs[i].a, (long)recs[i].b);
+                rec_csv(line, sizeof(line), &recs[i]);
             }
             chunk(req, line);
         }

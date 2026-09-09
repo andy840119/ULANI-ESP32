@@ -137,7 +137,8 @@ export const api = {
     /* The on-board event log: what happened while nobody was watching. */
     log: {
       status: () => request<LogStatus>('/api/system/log/status'),
-      tail: (since = 0, limit = 200) =>
+      /* The board streams these; keep the ask to what the list shows. */
+      tail: (since = 0, limit = 120) =>
         request<{ oldestSeq: number; nextSeq: number; dropped: number; records: LogRecord[] }>(
           `/api/system/log?since=${since}&limit=${limit}`,
         ),
