@@ -20,6 +20,7 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 
+#include "diag_log.h"
 #include "ulani_ble_priv.h"
 
 /*
@@ -322,6 +323,7 @@ esp_err_t ulani_op_exec(const uint8_t *frame, uint16_t len, bool wait_rsp, uint1
     if (xSemaphoreTake(s.op_sem, pdMS_TO_TICKS(ULANI_OP_TIMEOUT_MS)) != pdTRUE) {
         /* The JS resolves this as "<op>9999" and carries on; we surface it. */
         ESP_LOGW(TAG, "op 0x%02x timed out", frame[0]);
+        diag_log(DIAG_BLE_OP_TIMEOUT, 0, 0, frame[0], 0);
         return ESP_ERR_TIMEOUT;
     }
     if (rsp) {
@@ -713,6 +715,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT: {
         ESP_LOGW(TAG, "disconnected reason=%d (%s)", event->disconnect.reason,
                  ble_hs_err_str(event->disconnect.reason));
+        diag_log(DIAG_BLE_DISCONNECTED, 0, 0, event->disconnect.reason, 0);
         s.conn_handle = BLE_HS_CONN_HANDLE_NONE;
         s.op_val = s.dat_val = s.op_cccd = s.dat_cccd = 0;
         s.op_props = s.dat_props = 0;
@@ -786,6 +789,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         } else {
             ESP_LOGW(TAG, "unmatched notify rsp=%04x (expecting op 0x%02x)",
                      rsp, s.op_expect);
+            diag_log(DIAG_BLE_UNMATCHED, 0, 0, rsp, s.op_expect);
         }
         return 0;
     }
@@ -1073,6 +1077,7 @@ esp_err_t ulani_ble_connect(const char *addr_str, uint32_t timeout_ms)
     confirm_op_subscription();
 
     ESP_LOGI(TAG, "ready: op=%u data=%u mtu=%u", s.op_val, s.dat_val, s.mtu);
+    diag_log(DIAG_BLE_CONNECTED, 0, 0, s.mtu, 0);
     ulani_set_state(ULANI_STATE_READY);
     {
         ulani_event_t ev = { .type = ULANI_EV_CONNECTED };

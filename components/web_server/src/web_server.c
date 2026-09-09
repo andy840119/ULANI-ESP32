@@ -4,7 +4,10 @@
  * knowledge lives here.
  */
 
+#include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <time.h>
 
 #include "cJSON.h"
 #include "esp_app_desc.h"
@@ -16,6 +19,7 @@
 #include "mbedtls/base64.h"
 #include "nvs.h"
 
+#include "diag_log.h"
 #include "net_provision.h"
 #include "tesserae.h"
 #include "ulani_store.h"
@@ -65,6 +69,14 @@ static esp_err_t send_err(httpd_req_t *req, const char *status, const char *msg)
     cJSON_AddStringToObject(root, "error", msg);
     return send_json(req, root);
 }
+
+/*
+ * Records that a request changed something, with the caller's address. "Nobody
+ * touched it" is a claim the log should be able to settle, and this is the
+ * only place that knows a change came from a browser rather than from the
+ * board itself. Defined further down, next to the rest of the log plumbing.
+ */
+static void web_log_action(httpd_req_t *req, uint8_t slot, int action);
 
 /* Reads a small JSON body. Returns NULL and answers the request on failure. */
 static cJSON *read_json_body(httpd_req_t *req)
@@ -298,6 +310,7 @@ static esp_err_t post_settings_import(httpd_req_t *req)
     cJSON_AddBoolToObject(resp, "rebooting", true);
     esp_err_t err = send_json(req, resp);
 
+    web_log_action(req, 0, DIAG_WEB_REBOOT);
     xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
     return err;
 }
@@ -410,6 +423,7 @@ static esp_err_t post_connect(httpd_req_t *req)
         cJSON_Delete(body);
         return send_err(req, "400 Bad Request", "address required");
     }
+    web_log_action(req, 0, DIAG_WEB_CONNECT);
     esp_err_t err = ulani_app_cmd_connect(addr->valuestring);
     cJSON_Delete(body);
 
@@ -419,6 +433,7 @@ static esp_err_t post_connect(httpd_req_t *req)
 
 static esp_err_t post_disconnect(httpd_req_t *req)
 {
+    web_log_action(req, 0, DIAG_WEB_DISCONNECT);
     return ulani_app_cmd_disconnect() == ESP_OK
                ? send_ok(req)
                : send_err(req, "503 Service Unavailable", "busy");
@@ -426,6 +441,7 @@ static esp_err_t post_disconnect(httpd_req_t *req)
 
 static esp_err_t post_forget_device(httpd_req_t *req)
 {
+    web_log_action(req, 0, DIAG_WEB_FORGET_DEVICE);
     return ulani_app_cmd_forget_device() == ESP_OK
                ? send_ok(req)
                : send_err(req, "503 Service Unavailable", "busy");
@@ -463,6 +479,7 @@ static esp_err_t post_slot(httpd_req_t *req)
         cJSON_Delete(body);
         return send_err(req, "400 Bad Request", "slot required");
     }
+    web_log_action(req, (uint8_t)slot->valuedouble, DIAG_WEB_SET_SLOT);
     esp_err_t err = ulani_app_cmd_set_slot((uint8_t)slot->valuedouble);
     cJSON_Delete(body);
 
@@ -489,6 +506,7 @@ static esp_err_t post_test(httpd_req_t *req)
     bool a = cJSON_IsBool(act) ? cJSON_IsTrue(act) : false;
     cJSON_Delete(body);
 
+    web_log_action(req, s, DIAG_WEB_TEST_IMAGE);
     esp_err_t err = ulani_app_cmd_test_image(s, d, a);
     if (err == ESP_ERR_INVALID_ARG) {
         return send_err(req, "400 Bad Request", "slot must be 1..4");
@@ -553,6 +571,7 @@ static esp_err_t post_tesserae_connect(httpd_req_t *req)
         return send_err(req, "400 Bad Request", "serverUrl required");
     }
 
+    web_log_action(req, (uint8_t)slot->valuedouble, DIAG_WEB_TESS_CONNECT);
     esp_err_t err = tesserae_configure(
         (uint8_t)slot->valuedouble,
         url->valuestring,
@@ -565,6 +584,11 @@ static esp_err_t post_tesserae_connect(httpd_req_t *req)
         return send_err(req, "400 Bad Request",
                         "slot must be 1..4; a token also needs its device id, "
                         "and the fields have length limits");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_err(req, "409 Conflict",
+                        "another page already uses that Tesserae device; give "
+                        "this page its own, or the two will show the same image");
     }
     return err == ESP_OK ? send_ok(req)
                          : send_err(req, "500 Internal Server Error", "could not save");
@@ -589,6 +613,7 @@ static esp_err_t post_tesserae_forget(httpd_req_t *req)
     if (slot == 0) {
         return send_err(req, "400 Bad Request", "slot must be 1..4");
     }
+    web_log_action(req, slot, DIAG_WEB_TESS_FORGET);
     return tesserae_forget(slot) == ESP_OK
                ? send_ok(req)
                : send_err(req, "500 Internal Server Error", "could not erase");
@@ -600,6 +625,7 @@ static esp_err_t post_tesserae_poll(httpd_req_t *req)
     if (slot == 0) {
         return send_err(req, "400 Bad Request", "slot must be 1..4");
     }
+    web_log_action(req, slot, DIAG_WEB_TESS_POLL);
     if (tesserae_poll_now(slot) == ESP_ERR_INVALID_STATE) {
         return send_err(req, "409 Conflict", "no server configured for that slot");
     }
@@ -631,6 +657,7 @@ static esp_err_t post_slot_send(httpd_req_t *req)
     if (slot == 0) {
         return send_err(req, "400 Bad Request", "slot must be 1..4");
     }
+    web_log_action(req, slot, DIAG_WEB_SEND_SLOT);
     return ulani_app_cmd_send_slot(slot) == ESP_OK
                ? send_ok(req)
                : send_err(req, "503 Service Unavailable", "busy");
@@ -791,26 +818,328 @@ static esp_err_t redirect_to_root(httpd_req_t *req, httpd_err_code_t err)
 
 /* ------------------------------------------------------------------ init */
 
-esp_err_t web_server_start(void)
-{
-    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 32;
-    cfg.lru_purge_enable = true;
-    cfg.stack_size       = 6144;
-    /*
-     * Must stay below CONFIG_LWIP_MAX_SOCKETS with room for the listener and
-     * the captive-portal DNS socket, or accept() fails with ENFILE and requests
-     * are refused before any handler runs.
-     */
-    cfg.max_open_sockets = 10;
-    cfg.backlog_conn     = 8;
+/* ------------------------------------------------------------- event log */
 
-    esp_err_t err = httpd_start(&s_server, &cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "httpd_start: %s", esp_err_to_name(err));
-        return err;
+/*
+ * The log is read in two pieces: whatever has been written to flash, then the
+ * records still only in RAM. The join is stats.flushed_seq, not the last seq
+ * flash handed back: seq restarts at zero every boot, so after a restart flash
+ * ends on a *higher* number than anything in RAM and "carry on from there"
+ * silently drops the whole of the current boot. The snapshot is taken before
+ * the flash pass, so a record flushed while the export runs is written twice
+ * rather than not at all.
+ */
+
+/* Who is asking, for the records that say a change came from the web. */
+static uint32_t peer_ip(httpd_req_t *req)
+{
+    int sock = httpd_req_to_sockfd(req);
+    if (sock < 0) {
+        return 0;
+    }
+    struct sockaddr_in6 addr;
+    socklen_t           len = sizeof(addr);
+    if (getpeername(sock, (struct sockaddr *)&addr, &len) != 0) {
+        return 0;
+    }
+    /* lwIP hands back IPv4 as a v4-mapped v6 address; the last word is it. */
+    return addr.sin6_addr.un.u32_addr[3];
+}
+
+static void web_log_action(httpd_req_t *req, uint8_t slot, int action)
+{
+    diag_log(DIAG_WEB_ACTION, slot, 0, (int32_t)peer_ip(req), action);
+}
+
+static esp_err_t chunk(httpd_req_t *req, const char *text)
+{
+    return httpd_resp_send_chunk(req, text, HTTPD_RESP_USE_STRLEN);
+}
+
+/*
+ * Records are formatted straight into a line buffer, never assembled as a
+ * cJSON tree. A tree costs roughly nine nodes and eight key strings per
+ * record -- something like 800 bytes each -- and then printing it wants one
+ * more contiguous allocation for the whole document. A couple of hundred
+ * records is well past the ~60 KB this board has free, so the read that was
+ * supposed to be routine is the one that fails, and it only starts failing
+ * once there is enough history to be worth reading.
+ *
+ * Both formatters are shared by the live tail and the export so the two can
+ * never drift apart.
+ */
+static int rec_json(char *out, size_t len, const diag_rec_t *r)
+{
+    return snprintf(out, len,
+                    "{\"seq\":%lu,\"uptimeMs\":%lu,\"epoch\":%lu,\"code\":%u,"
+                    "\"slot\":%u,\"result\":%d,\"a\":%ld,\"b\":%ld}",
+                    (unsigned long)r->seq, (unsigned long)r->uptime_ms,
+                    (unsigned long)r->epoch, r->code, r->slot, r->result,
+                    (long)r->a, (long)r->b);
+}
+
+static int rec_csv(char *out, size_t len, const diag_rec_t *r)
+{
+    return snprintf(out, len, "%lu,%lu,%lu,%u,%u,%d,%ld,%ld\n",
+                    (unsigned long)r->seq, (unsigned long)r->uptime_ms,
+                    (unsigned long)r->epoch, r->code, r->slot, r->result,
+                    (long)r->a, (long)r->b);
+}
+
+static esp_err_t get_log_status(httpd_req_t *req)
+{
+    diag_log_stats_t st;
+    diag_log_get_stats(&st);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "schema", DIAG_SCHEMA_VERSION);
+    cJSON_AddBoolToObject(root, "enabled", st.enabled);
+    cJSON_AddBoolToObject(root, "persist", st.persist);
+    cJSON_AddNumberToObject(root, "traceLevel", st.trace_level);
+    cJSON_AddNumberToObject(root, "bootId", st.boot_id);
+    cJSON_AddNumberToObject(root, "oldestSeq", st.oldest_seq);
+    cJSON_AddNumberToObject(root, "nextSeq", st.next_seq);
+    cJSON_AddNumberToObject(root, "dropped", st.dropped);
+    cJSON_AddNumberToObject(root, "capacity", st.capacity);
+    cJSON_AddNumberToObject(root, "count", st.count);
+    cJSON_AddNumberToObject(root, "traceLen", st.trace_len);
+    cJSON_AddNumberToObject(root, "traceTotal", st.trace_total);
+    /* The flash tier, in the terms the settings page offers. */
+    cJSON_AddNumberToObject(root, "flashBytes", ulani_store_log_size());
+    cJSON_AddNumberToObject(root, "segments", ulani_store_log_segments());
+    cJSON_AddNumberToObject(root, "segmentBytes", ULANI_LOG_SEGMENT_BYTES);
+    cJSON_AddNumberToObject(root, "storageFree", ulani_store_free_bytes());
+    return send_json(req, root);
+}
+
+/*
+ * The live view: the RAM ring only, which is all a browser needs to tail.
+ * Streamed a few records at a time, so the cost of answering does not grow
+ * with how much history the board is holding.
+ */
+#define LOG_TAIL_DEFAULT 120
+#define LOG_TAIL_MAX     200
+#define LOG_TAIL_BATCH   16
+
+static esp_err_t get_log(httpd_req_t *req)
+{
+    uint32_t since = 0;
+    size_t   limit = LOG_TAIL_DEFAULT;
+
+    char query[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char value[16];
+        if (httpd_query_key_value(query, "since", value, sizeof(value)) == ESP_OK) {
+            since = (uint32_t)strtoul(value, NULL, 10);
+        }
+        if (httpd_query_key_value(query, "limit", value, sizeof(value)) == ESP_OK) {
+            size_t n = (size_t)strtoul(value, NULL, 10);
+            if (n > 0) {
+                limit = (n < LOG_TAIL_MAX) ? n : LOG_TAIL_MAX;
+            }
+        }
     }
 
+    diag_log_stats_t st;
+    diag_log_get_stats(&st);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    char line[192];
+    snprintf(line, sizeof(line),
+             "{\"oldestSeq\":%lu,\"nextSeq\":%lu,\"dropped\":%lu,\"records\":[",
+             (unsigned long)st.oldest_seq, (unsigned long)st.next_seq,
+             (unsigned long)st.dropped);
+    chunk(req, line);
+
+    diag_rec_t batch[LOG_TAIL_BATCH];
+    uint32_t   from = since;
+    size_t     sent = 0;
+
+    while (sent < limit) {
+        size_t want = limit - sent;
+        if (want > LOG_TAIL_BATCH) {
+            want = LOG_TAIL_BATCH;
+        }
+        size_t n = diag_log_read(from, batch, want);
+        if (n == 0) {
+            break;
+        }
+        for (size_t i = 0; i < n; i++) {
+            size_t at = 0;
+            if (sent) {
+                line[at++] = ',';
+            }
+            rec_json(line + at, sizeof(line) - at, &batch[i]);
+            chunk(req, line);
+            sent++;
+        }
+        from = batch[n - 1].seq + 1;
+    }
+
+    chunk(req, "]}");
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/*
+ * The export. CSV by default because it is what gets opened in a spreadsheet
+ * and pasted into an issue; the schema line at the top is what makes an old
+ * file readable later, so it is a comment rather than a column.
+ */
+static esp_err_t get_log_export(httpd_req_t *req)
+{
+    bool ndjson = false;
+    char query[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char value[16];
+        if (httpd_query_key_value(query, "format", value, sizeof(value)) == ESP_OK) {
+            ndjson = strcmp(value, "ndjson") == 0;
+        }
+    }
+
+    diag_log_stats_t st;
+    diag_log_get_stats(&st);
+
+    httpd_resp_set_type(req, ndjson ? "application/x-ndjson" : "text/csv");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       ndjson ? "attachment; filename=\"ulani-log.ndjson\""
+                              : "attachment; filename=\"ulani-log.csv\"");
+
+    char line[160];
+    snprintf(line, sizeof(line),
+             "# ulani event log schema=%d fw=%s boot=%08lx exported=%lld dropped=%lu\n",
+             DIAG_SCHEMA_VERSION, esp_app_get_description()->version,
+             (unsigned long)st.boot_id, (long long)time(NULL),
+             (unsigned long)st.dropped);
+    chunk(req, line);
+    if (!ndjson) {
+        chunk(req, "seq,uptime_ms,epoch,code,slot,result,a,b\n");
+    }
+
+    /* Flash first, in blocks; then whatever RAM holds beyond it. */
+    static const size_t BATCH = 32;
+    diag_rec_t *recs = malloc(BATCH * sizeof(diag_rec_t));
+    if (!recs) {
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
+    }
+
+    size_t offset = 0;
+    for (;;) {
+        size_t got = ulani_store_log_read(offset, recs, BATCH * sizeof(diag_rec_t));
+        size_t n   = got / sizeof(diag_rec_t);
+        if (n == 0) {
+            break;
+        }
+        offset += n * sizeof(diag_rec_t);
+        for (size_t i = 0; i < n; i++) {
+            if (ndjson) {
+                int at = rec_json(line, sizeof(line) - 2, &recs[i]);
+                if (at > 0 && (size_t)at < sizeof(line) - 2) {
+                    line[at]     = 0x0a;
+                    line[at + 1] = 0;
+                }
+            } else {
+                rec_csv(line, sizeof(line), &recs[i]);
+            }
+            chunk(req, line);
+        }
+    }
+
+    uint32_t from = st.flushed_seq;
+    for (;;) {
+        size_t n = diag_log_read(from, recs, BATCH);
+        if (n == 0) {
+            break;
+        }
+        for (size_t i = 0; i < n; i++) {
+            if (ndjson) {
+                int at = rec_json(line, sizeof(line) - 2, &recs[i]);
+                if (at > 0 && (size_t)at < sizeof(line) - 2) {
+                    line[at]     = 0x0a;
+                    line[at + 1] = 0;
+                }
+            } else {
+                rec_csv(line, sizeof(line), &recs[i]);
+            }
+            chunk(req, line);
+        }
+        from = recs[n - 1].seq + 1;
+    }
+
+    free(recs);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* The text trace, exactly as it would have come out of the serial port. */
+static esp_err_t get_log_trace(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       "attachment; filename=\"ulani-trace.txt\"");
+
+    char    *buf  = malloc(1024);
+    if (!buf) {
+        return send_err(req, "503 Service Unavailable", "out of memory");
+    }
+    uint32_t from = 0;
+    for (;;) {
+        size_t n = diag_trace_read(&from, buf, 1024);
+        if (n == 0) {
+            break;
+        }
+        httpd_resp_send_chunk(req, buf, n);
+    }
+    free(buf);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t post_log_settings(httpd_req_t *req)
+{
+    cJSON *body = read_json_body(req);
+    if (!body) {
+        return send_err(req, "400 Bad Request", "expected a JSON body");
+    }
+
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(body, "enabled");
+    if (cJSON_IsBool(v)) {
+        diag_log_set_enabled(cJSON_IsTrue(v));
+    }
+    v = cJSON_GetObjectItemCaseSensitive(body, "persist");
+    if (cJSON_IsBool(v)) {
+        diag_log_set_persist(cJSON_IsTrue(v));
+    }
+    v = cJSON_GetObjectItemCaseSensitive(body, "traceLevel");
+    if (cJSON_IsNumber(v)) {
+        diag_log_set_trace_level((int)v->valuedouble);
+    }
+    v = cJSON_GetObjectItemCaseSensitive(body, "segments");
+    if (cJSON_IsNumber(v)) {
+        ulani_store_log_set_segments((uint8_t)v->valuedouble);
+    }
+    cJSON_Delete(body);
+
+    web_log_action(req, 0, DIAG_WEB_SETTINGS);
+    return send_ok(req);
+}
+
+static esp_err_t post_log_clear(httpd_req_t *req)
+{
+    ulani_store_log_clear();
+    diag_log_clear();
+    /* After the clear, so the first record in the new log says who did it. */
+    web_log_action(req, 0, DIAG_WEB_SETTINGS);
+    return send_ok(req);
+}
+
+esp_err_t web_server_start(void)
+{
     static const httpd_uri_t routes[] = {
         { .uri = "/",                  .method = HTTP_GET,  .handler = get_index },
         { .uri = "/app.js",            .method = HTTP_GET,  .handler = get_app_js },
@@ -820,6 +1149,12 @@ esp_err_t web_server_start(void)
         { .uri = "/api/system/settings",        .method = HTTP_POST, .handler = post_settings },
         { .uri = "/api/system/settings/export", .method = HTTP_GET,  .handler = get_settings_export },
         { .uri = "/api/system/settings/import", .method = HTTP_POST, .handler = post_settings_import },
+        { .uri = "/api/system/log/status",      .method = HTTP_GET,  .handler = get_log_status },
+        { .uri = "/api/system/log",             .method = HTTP_GET,  .handler = get_log },
+        { .uri = "/api/system/log/export",      .method = HTTP_GET,  .handler = get_log_export },
+        { .uri = "/api/system/log/trace",       .method = HTTP_GET,  .handler = get_log_trace },
+        { .uri = "/api/system/log/settings",    .method = HTTP_POST, .handler = post_log_settings },
+        { .uri = "/api/system/log/clear",       .method = HTTP_POST, .handler = post_log_clear },
 
         /* calendar: the ULANI device and its four pages */
         { .uri = "/api/calendar/status",        .method = HTTP_GET,  .handler = get_status },
@@ -847,8 +1182,40 @@ esp_err_t web_server_start(void)
         { .uri = "/api/tesserae/poll",          .method = HTTP_POST, .handler = post_tesserae_poll },
         { .uri = "/api/tesserae/forget",        .method = HTTP_POST, .handler = post_tesserae_forget },
     };
+
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    /*
+     * Derived, never a number typed in here. httpd silently refuses to
+     * register past this limit -- the route is simply not there and every
+     * request for it falls through to the 404 handler -- so a table that grew
+     * past a hand-written figure would cost whichever endpoint happened to be
+     * last, with nothing to say so (caught exactly that way in #52).
+     */
+    cfg.max_uri_handlers = sizeof(routes) / sizeof(routes[0]);
+    cfg.lru_purge_enable = true;
+    cfg.stack_size       = 6144;
+    /*
+     * Must stay below CONFIG_LWIP_MAX_SOCKETS with room for the listener and
+     * the captive-portal DNS socket, or accept() fails with ENFILE and requests
+     * are refused before any handler runs.
+     */
+    cfg.max_open_sockets = 10;
+    cfg.backlog_conn     = 8;
+
+    esp_err_t err = httpd_start(&s_server, &cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_start: %s", esp_err_to_name(err));
+        return err;
+    }
+
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
-        httpd_register_uri_handler(s_server, &routes[i]);
+        esp_err_t rerr = httpd_register_uri_handler(s_server, &routes[i]);
+        if (rerr != ESP_OK) {
+            /* Loud, because the symptom otherwise is one endpoint quietly
+             * answering the captive-portal redirect forever. */
+            ESP_LOGE(TAG, "route %s did not register: %s", routes[i].uri,
+                     esp_err_to_name(rerr));
+        }
     }
 
     httpd_register_err_handler(s_server, HTTPD_404_NOT_FOUND, redirect_to_root);

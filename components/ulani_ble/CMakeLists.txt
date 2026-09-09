@@ -5,4 +5,4 @@ idf_component_register(
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "src"
     REQUIRES bt
-    PRIV_REQUIRES esp_timer)
+    PRIV_REQUIRES esp_timer diag_log)

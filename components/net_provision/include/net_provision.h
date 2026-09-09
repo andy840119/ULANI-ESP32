@@ -69,6 +69,14 @@ esp_err_t net_sta_forget(void);
 
 void net_sta_get_status(net_sta_status_t *out);
 
+/*
+ * Whether the wall clock has been set from NTP. The board has no RTC, so
+ * time(NULL) is meaningless until this turns true; the log records that until
+ * then carry uptime only, and Tesserae's HTTP Date header is what fills in for
+ * a network with no reachable time server.
+ */
+bool net_time_synced(void);
+
 /* ------------------------------------------------------------------- scan */
 
 typedef struct {

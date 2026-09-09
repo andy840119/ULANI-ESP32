@@ -10,6 +10,7 @@ components/
   net_provision/    SoftAP + STA + captive portal DNS
   web_server/       HTTP：REST 端點 + 內嵌的前端靜態檔
   status_led/       板上 LED 狀態燈（可用 Kconfig 選板子／腳位）
+  diag_log/         事件日誌：RAM ring + 文字 trace，落地與匯出見 diagnostics.md
 main/               只做啟動組裝
 web/                前端（獨立 Vite 專案，不受 idf.py 管）
   src/lib/          api client、共用 UI plumbing

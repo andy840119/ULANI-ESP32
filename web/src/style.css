@@ -664,3 +664,61 @@ button.tc-toggle h3 {
 .meter-row.low .rowfill {
   background: var(--danger);
 }
+
+/* The event log's live tail. Dense on purpose: it is read by scanning for the
+   one line that is out of place, so every row has to fit on one line and the
+   columns have to line up. */
+.log-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  max-height: 22rem;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  font-size: 0.8rem;
+}
+
+.log-list li {
+  display: grid;
+  grid-template-columns: 10.5rem 4.5rem 1fr;
+  gap: 0.5rem;
+  padding: 0.3rem 0.1rem;
+  border-bottom: 1px solid var(--line);
+  align-items: baseline;
+}
+
+.log-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log-src {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.log-src-calendar,
+.log-src-tesserae {
+  color: var(--accent);
+}
+
+/* The lines worth finding: a page that moved on its own, a restart, a failure.
+   Marked rather than filtered, so the ordinary traffic around them is still
+   there to read. */
+.log-list li.notable {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.log-list li.notable .log-text {
+  font-weight: 600;
+}
+
+@media (max-width: 30rem) {
+  .log-list li {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
+  }
+}

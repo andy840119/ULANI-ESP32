@@ -87,6 +87,13 @@ void ulani_app_set_slot_badge(uint8_t slot, bool on);
 bool ulani_app_get_slot_badge(uint8_t slot);
 
 void ulani_app_get_status(ulani_app_status_t *out);
+
+/*
+ * True while an image is going out. The radio is shared, so this is the one
+ * window in which nothing else should reach for flash or the network; the
+ * event log asks before it writes.
+ */
+bool ulani_app_transfer_active(void);
 size_t ulani_app_get_devices(ulani_device_t *out, size_t max);
 
 /* All commands are queued; they return ESP_ERR_NO_MEM if the queue is full. */

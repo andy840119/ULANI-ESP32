@@ -1,9 +1,11 @@
 #include <string.h>
+#include <time.h>
 
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -11,6 +13,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "diag_log.h"
 #include "net_provision.h"
 
 static const char *TAG = "net_ap";
@@ -40,6 +43,7 @@ static struct {
     char ssid[NET_SSID_MAX];
 
     net_sta_state_t state;
+    bool            time_synced;
     char            ip[16];
     int8_t          rssi;
     uint8_t         last_reason;
@@ -235,6 +239,7 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         unlock();
 
         ESP_LOGW(TAG, "station disconnected, reason=%d", e->reason);
+        diag_log(DIAG_NET_DISCONNECTED, 0, 0, e->reason, 0);
         if (w.configured) {
             retry_start();
         }
@@ -248,6 +253,62 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     default:
         break;
     }
+}
+
+/* ------------------------------------------------------------------- clock */
+
+/*
+ * The board has no RTC and no network until it joins, so the wall clock starts
+ * unknown and anything time-stamped before this can only be ordered by uptime.
+ * Started on the first join and then left running: lwIP resyncs on its own.
+ *
+ * The DHCP server's own NTP offer is tried first -- that is usually the router
+ * two metres away, which answers when the internet does not -- with
+ * pool.ntp.org behind it. Tesserae's HTTP Date header stays as the last resort
+ * for a network that offers neither; see note_wall_clock() in tesserae.c.
+ */
+static void time_sync_done(struct timeval *tv)
+{
+    (void)tv;
+    lock();
+    bool first = !w.time_synced;
+    w.time_synced = true;
+    unlock();
+
+    time_t now = time(NULL);
+    ESP_LOGI(TAG, "clock %s from NTP: %lld", first ? "set" : "resynced",
+             (long long)now);
+    diag_log(DIAG_SYS_TIME_SYNC, 0, 0, (int32_t)now, 0);
+}
+
+static void time_start(void)
+{
+    static bool started;
+    if (started) {
+        return;
+    }
+    started = true;
+
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    cfg.start                      = true;
+    cfg.server_from_dhcp           = true; /* the router first, if it offers one */
+    cfg.renew_servers_after_new_IP = true;
+    cfg.index_of_first_server      = 1;    /* leave slot 0 for the DHCP server */
+    cfg.sync_cb                    = time_sync_done;
+
+    esp_err_t err = esp_netif_sntp_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "no NTP client: %s", esp_err_to_name(err));
+        started = false;
+    }
+}
+
+bool net_time_synced(void)
+{
+    lock();
+    bool ok = w.time_synced;
+    unlock();
+    return ok;
 }
 
 static void ip_event(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -264,6 +325,15 @@ static void ip_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     w.retries = 0;
     snprintf(w.ip, sizeof(w.ip), IPSTR, IP2STR(&e->ip_info.ip));
     unlock();
+
+    int8_t rssi = 0;
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        rssi = ap.rssi;
+    }
+    /* b is the address as lwIP holds it: four bytes, lowest octet first. */
+    diag_log(DIAG_NET_CONNECTED, 0, 0, rssi, (int32_t)e->ip_info.ip.addr);
+    time_start();
 
     retry_stop();
     ESP_LOGI(TAG, "joined \"%s\", reachable at http://%s/", w.ssid, w.ip);

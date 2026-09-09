@@ -1,4 +1,5 @@
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "cJSON.h"
@@ -12,6 +13,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 
+#include "diag_log.h"
 #include "net_provision.h"
 #include "status_led.h"
 #include "tesserae.h"
@@ -90,14 +92,6 @@ static struct {
     void                 *user;
 
     client_t client[TESSERAE_CLIENTS];
-
-    /*
-     * Wall clock, learned from the server's HTTP Date header rather than SNTP,
-     * as the reference firmware does. base_epoch is the server time at the
-     * instant base_us was sampled from the monotonic timer; 0 = unknown.
-     */
-    int64_t wall_base_epoch;
-    int64_t wall_base_us;
 } s;
 
 static void lock(void)   { xSemaphoreTake(s.lock, portMAX_DELAY); }
@@ -166,31 +160,38 @@ static int64_t parse_http_date(const char *d)
     return epoch > 1500000000 ? epoch : 0;
 }
 
+/* The wall clock, or 0 while nothing has set it yet. */
+static uint32_t now_epoch(void)
+{
+    time_t now = time(NULL);
+    return (now > 1500000000) ? (uint32_t)now : 0;
+}
+
+/*
+ * The server's Date header as a clock of last resort.
+ *
+ * NTP is what normally sets the time (net_provision), and it is the better
+ * source by a wide margin -- seconds rather than "whenever the last reply came
+ * back", and available before any Tesserae request has succeeded. But a
+ * network that blocks NTP and a Tesserae box on the LAN is a perfectly ordinary
+ * setup, and there the reference firmware's trick is all there is. So: fill in
+ * the system clock the first time a reply carries a usable date, and stay out
+ * of the way once anything better has set it.
+ */
 static void note_wall_clock(const char *date_hdr)
 {
-    if (!date_hdr) {
+    if (!date_hdr || now_epoch() != 0) {
         return;
     }
     int64_t epoch = parse_http_date(date_hdr);
     if (epoch <= 0) {
         return;
     }
-    lock();
-    s.wall_base_epoch = epoch;
-    s.wall_base_us    = esp_timer_get_time();
-    unlock();
-}
-
-static uint32_t now_epoch(void)
-{
-    lock();
-    int64_t base = s.wall_base_epoch;
-    int64_t at   = s.wall_base_us;
-    unlock();
-    if (base <= 0) {
-        return 0;
-    }
-    return (uint32_t)(base + (esp_timer_get_time() - at) / 1000000);
+    struct timeval tv = { .tv_sec = (time_t)epoch, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+    ESP_LOGI(TAG, "clock set from the server's Date header: %lld",
+             (long long)epoch);
+    diag_log(DIAG_SYS_TIME_SYNC, 0, 0, (int32_t)epoch, 1);
 }
 
 /* ---------------------------------------------------------------- config */
@@ -533,6 +534,7 @@ static bool try_register(client_t *c)
             c->last_error[0] = 0;
             unlock();
             config_save(c);
+            diag_log(DIAG_TESS_REGISTERED, c->slot, 0, status, 0);
             ESP_LOGI(TAG, "slot %u registered as %s", c->slot, c->device_id);
             ok = true;
         } else {
@@ -647,10 +649,13 @@ static int32_t post_status(client_t *c)
         return -1;
     }
 
-    int   status = 0;
-    char *rsp = http_json(HTTP_METHOD_POST, url, body, c->token, NULL, NULL,
-                          &status, NULL, 0);
+    int     status  = 0;
+    int64_t started = esp_timer_get_time();
+    char   *rsp = http_json(HTTP_METHOD_POST, url, body, c->token, NULL, NULL,
+                            &status, NULL, 0);
     free(body);
+    int32_t ms = (int32_t)((esp_timer_get_time() - started) / 1000);
+    diag_log(DIAG_TESS_STATUS, c->slot, rsp ? 0 : -1, status, ms);
     if (!rsp) {
         return -1;
     }
@@ -662,6 +667,7 @@ static int32_t post_status(client_t *c)
         cJSON *v = cJSON_GetObjectItemCaseSensitive(r, "next_poll_s");
         if (cJSON_IsNumber(v)) {
             next = (int32_t)v->valuedouble;
+            diag_log(DIAG_TESS_NEXT_POLL, c->slot, 0, next, 0);
         }
         cJSON_Delete(r);
     }
@@ -671,6 +677,7 @@ static int32_t post_status(client_t *c)
         c->state    = TESSERAE_UNREGISTERED;
         unlock();
         config_save(c);
+        diag_log(DIAG_TESS_REJECTED, c->slot, 0, status, 0);
         ESP_LOGW(TAG, "slot %u: token rejected; will register again", c->slot);
     }
     return next;
@@ -711,6 +718,9 @@ static bool fetch_frame_body(client_t *c, const char *url, bool with_auth)
     bool ok = false;
     ulani_store_writer_t writer;
     bool writing = false;
+    int  status  = 0;
+    size_t written = 0;
+    const int64_t started = esp_timer_get_time();
 
     if (esp_http_client_open(cli, 0) != ESP_OK) {
         set_error(c, "cannot open the frame URL");
@@ -718,7 +728,7 @@ static bool fetch_frame_body(client_t *c, const char *url, bool with_auth)
     }
 
     int64_t total = esp_http_client_fetch_headers(cli); /* fires header_evt */
-    int status = esp_http_client_get_status_code(cli);
+    status = esp_http_client_get_status_code(cli);
 
     if (status != 200) {
         ESP_LOGW(TAG, "slot %u: frame body HTTP %d from %s", c->slot, status, url);
@@ -754,7 +764,6 @@ static bool fetch_frame_body(client_t *c, const char *url, bool with_auth)
     writing = true;
 
     static uint8_t buf[1024];
-    size_t written = 0;
 
     while (written < ULANI_PAYLOAD_BYTES) {
         int want = (int)sizeof(buf);
@@ -785,6 +794,12 @@ static bool fetch_frame_body(client_t *c, const char *url, bool with_auth)
     ok = true;
 
 done:
+    if (ok) {
+        diag_log(DIAG_TESS_FRAME_STORED, c->slot, 0, (int32_t)written,
+                 (int32_t)((esp_timer_get_time() - started) / 1000));
+    } else {
+        diag_log(DIAG_TESS_FRAME_FAILED, c->slot, -1, status, (int32_t)written);
+    }
     if (writing) {
         ulani_store_write_abort(&writer);
     }
@@ -800,10 +815,13 @@ static bool poll_frame(client_t *c)
     snprintf(url, sizeof(url), "%s/api/v1/device/%s/frame",
              c->server_url, c->device_id);
 
-    int  status = 0;
-    char etag[TESSERAE_ETAG_MAX] = { 0 };
-    char *rsp = http_json(HTTP_METHOD_GET, url, NULL, c->token, NULL, c->etag,
-                          &status, etag, sizeof(etag));
+    int     status = 0;
+    char    etag[TESSERAE_ETAG_MAX] = { 0 };
+    int64_t started = esp_timer_get_time();
+    char   *rsp = http_json(HTTP_METHOD_GET, url, NULL, c->token, NULL, c->etag,
+                            &status, etag, sizeof(etag));
+    diag_log(DIAG_TESS_FRAME, c->slot, rsp ? 0 : -1, status,
+             (int32_t)((esp_timer_get_time() - started) / 1000));
 
     if (status == 304) {
         free(rsp);
@@ -1066,6 +1084,22 @@ esp_err_t tesserae_configure(uint8_t slot, const char *server_url,
     if (token && token[0] && !(device_id && device_id[0])) {
         return ESP_ERR_INVALID_ARG;
     }
+    /*
+     * Two pages pointed at one Tesserae device is the shape of issue #48: both
+     * fetch the same dashboard, so whatever page 1 was designed for turns up on
+     * page 2 as well, and the two clients write over each other's ETag. The
+     * server hands out a device per page; refuse to let the board undo that.
+     */
+    if (device_id && device_id[0]) {
+        for (int i = 0; i < TESSERAE_CLIENTS; i++) {
+            client_t *other = &s.client[i];
+            if (other != c && strcmp(other->device_id, device_id) == 0) {
+                ESP_LOGW(TAG, "slot %u already uses device %s", other->slot,
+                         device_id);
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+    }
 
     lock();
     strlcpy(c->server_url, server_url, sizeof(c->server_url));
@@ -1134,7 +1168,7 @@ void tesserae_note_sent(uint8_t slot)
     if (!c) {
         return;
     }
-    uint32_t at = now_epoch(); /* takes the lock itself, so before ours */
+    uint32_t at = now_epoch();
     lock();
     c->last_sent_epoch = at;
     unlock();

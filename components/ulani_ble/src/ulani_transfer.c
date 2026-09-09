@@ -17,6 +17,7 @@
 
 #include "esp_log.h"
 
+#include "diag_log.h"
 #include "ulani_ble_priv.h"
 
 static const char *TAG = "ulani_xfer";
@@ -119,6 +120,8 @@ static attempt_result_t send_attempt(uint8_t slot, const ulani_payload_src_t *sr
                                      uint16_t *rsp, esp_err_t *err)
 {
     *rsp = 0;
+
+    const int64_t started_us = esp_timer_get_time();
 
     uint8_t header[20];
     int hlen = ulani_build_send_header(slot, now_ms(), crc, header, sizeof(header));
@@ -240,6 +243,8 @@ static attempt_result_t send_attempt(uint8_t slot, const ulani_payload_src_t *sr
     }
 
     bool ok = (*rsp == ULANI_RSP_IMAGE_OK);
+    diag_log(DIAG_BLE_SEND_ATTEMPT, slot, (int8_t)attempt, *rsp,
+             (int32_t)((esp_timer_get_time() - started_us) / 1000));
     ESP_LOGI(TAG, "slot %u: attempt %s (rsp=%04x, %u packets, gap %u ms, "
                   "%u buffer stalls)",
              slot, ok ? "ok" : "incomplete", *rsp, (unsigned)index,
@@ -264,6 +269,7 @@ esp_err_t ulani_ble_send_image(uint8_t slot, const ulani_payload_src_t *src)
         return err;
     }
     ESP_LOGI(TAG, "slot %u: payload crc=%04x", slot, crc);
+    diag_log(DIAG_BLE_SEND_PAYLOAD, slot, 0, crc, (int32_t)ULANI_PAYLOAD_BYTES);
 
     /* The JS always does this immediately before a transfer. */
     if (ulani_ble_check_customer_id(NULL) != ESP_OK) {

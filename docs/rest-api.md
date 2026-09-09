@@ -10,6 +10,12 @@
 | POST | `/api/system/settings` | `{"idleTimeoutMs": 300000}`（閒置多久後斷線，0=不斷） |
 | GET | `/api/system/settings/export` | 匯出設定（含配對）為 JSON |
 | POST | `/api/system/settings/import` | 匯入設定後重開機 |
+| GET | `/api/system/log/status` | 日誌開關、筆數、flash 用量、剩餘空間 |
+| GET | `/api/system/log?since=N&limit=M` | 記憶體裡的事件（給後台即時看） |
+| GET | `/api/system/log/export?format=csv\|ndjson` | 匯出全部事件（flash + 記憶體），CSV 為預設 |
+| GET | `/api/system/log/trace` | 文字 log（等同序列埠最近幾十分鐘的輸出） |
+| POST | `/api/system/log/settings` | `{"enabled", "persist", "traceLevel", "segments"}` |
+| POST | `/api/system/log/clear` | 清空記憶體與 flash 裡的日誌 |
 | GET | `/api/calendar/status` | 連線狀態、電量、目前相框、掃描結果 |
 | GET | `/api/calendar/devices` | 掃描到的裝置 |
 | POST | `/api/calendar/scan` | `{"durationMs": 8000}` |
@@ -27,8 +33,11 @@
 | POST | `/api/wifi/connect` | `{"ssid": "...", "password": "..."}` |
 | POST | `/api/wifi/forget` | 清除已存的網路 |
 | GET | `/api/tesserae/status` | Tesserae 連線狀態 |
-| POST | `/api/tesserae/connect` | `{"serverUrl", "pairingCode", "deviceId", "token", "slot"}` |
+| POST | `/api/tesserae/connect` | `{"serverUrl", "pairingCode", "deviceId", "token", "slot"}`；device id 已被別頁使用會回 409 |
 | POST | `/api/tesserae/poll` | 不等排程，立刻抓一次 |
 | POST | `/api/tesserae/forget` | 清除 server 設定與 token |
 
 > 掃描結果隨 `/api/calendar/status` 一起回，UI 只需要一個輪詢就能驅動整個畫面。
+
+> 事件日誌的欄位定義與事件編號見 [diagnostics.md](diagnostics.md)。編號是寫進檔案的
+> 格式，**只增不改**。
